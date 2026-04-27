@@ -46,7 +46,7 @@ class ARTMConfig:
     activation: str = "gelu"
     rope_base: float = 10000.0
     gradient_checkpointing: bool = True
-    label_smoothing: float = 0.05
+    label_smoothing: float = 0.02
     pad_token_id: int = 0
 
 
@@ -427,6 +427,14 @@ HENDRYCKS_MATH_CONFIGS: List[str] = [
     "geometry",
 ]
 
+# Runtime preprocessing knobs set from CLI in main().
+SHORT_RESPONSE_MODE = False
+MATH_REASONING_STYLE = "steps"  # "steps" | "final_only"
+MAX_CHAT_CHARS = 220
+FILTER_NOISY_SAMPLES = True
+MAX_SAMPLE_CHARS = 1400
+MATH_REPEAT_FACTOR = 1
+
 
 def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
     user_text = _to_clean_text(user_text)
@@ -436,12 +444,27 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
 
     if mode == "math":
         system_prompt = MATH_SYSTEM_PROMPT
-        if "Step 1:" not in assistant_text:
-            assistant_text = f"Step 1: Solve carefully.\nFinal Answer: {assistant_text}"
+        if MATH_REASONING_STYLE == "final_only":
+            assistant_text = _extract_final_answer_text(assistant_text)
+        elif "Step 1:" not in assistant_text:
+            final = _extract_final_answer_text(assistant_text)
+            assistant_text = f"Step 1: Solve the equation.\nStep 2: Compute carefully.\nFinal Answer: {final}"
     elif mode == "emotion":
         system_prompt = EMOTION_SYSTEM_PROMPT
     else:
         system_prompt = GENERAL_SYSTEM_PROMPT
+        if SHORT_RESPONSE_MODE and len(assistant_text) > MAX_CHAT_CHARS:
+            assistant_text = assistant_text[:MAX_CHAT_CHARS].rsplit(" ", 1)[0].strip() + "."
+
+    if FILTER_NOISY_SAMPLES:
+        if _is_noisy_text(user_text) or _is_noisy_text(assistant_text):
+            return ""
+        if len(user_text) + len(assistant_text) > MAX_SAMPLE_CHARS:
+            return ""
+        if mode == "math":
+            final = _extract_final_answer_text(assistant_text)
+            if not final or final.lower() == "unknown":
+                return ""
 
     return (
         "<system>\n"
@@ -451,6 +474,24 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
         "<assistant>\n"
         f"{assistant_text}"
     )
+
+
+def _is_noisy_text(text: str) -> bool:
+    t = _to_clean_text(text)
+    if not t:
+        return True
+    if len(t) < 2:
+        return True
+    # reject mostly-symbol garbage
+    alpha_num = sum(ch.isalnum() for ch in t)
+    if alpha_num / max(1, len(t)) < 0.20:
+        return True
+    # reject obvious corruption / formatting spam
+    if re.search(r"[\{\}\[\]<>]{6,}", t):
+        return True
+    if re.search(r"(.)\1{8,}", t):
+        return True
+    return False
 
 
 def _record_to_text(record: Dict[str, object]) -> str:
@@ -515,6 +556,18 @@ def _split_reasoning_and_final(answer_text: str) -> Tuple[List[str], str]:
     return [], text
 
 
+def _extract_final_answer_text(text: str) -> str:
+    steps, final = _split_reasoning_and_final(text)
+    final = _to_clean_text(final)
+    if final:
+        return final
+    boxed = _extract_boxed_answer(text)
+    if boxed:
+        return boxed
+    stripped = _to_clean_text(text)
+    return stripped if stripped else "Unknown"
+
+
 def _extract_boxed_answer(text: str) -> str:
     # Keep this lightweight and robust for MATH-style \boxed{...} outputs.
     matches = re.findall(r"\\boxed\{([^{}]+)\}", text)
@@ -540,6 +593,8 @@ def _distill_reasoning_steps(steps: List[str], max_steps: int = 4) -> List[str]:
 
 
 def _format_reasoning_answer(steps: List[str], final_answer: str) -> str:
+    if MATH_REASONING_STYLE == "final_only":
+        return _to_clean_text(final_answer)
     lines: List[str] = []
     for i, step in enumerate(steps, start=1):
         lines.append(f"Step {i}: {step}")
@@ -684,6 +739,77 @@ def load_hf_math_texts(
     return combined_texts
 
 
+def load_hf_math_structured_samples(
+    max_samples_per_dataset: int,
+    cache_dir: Optional[str],
+    seed: int,
+    easy_math_samples: int = 0,
+) -> List[str]:
+    per_dataset_cap = max_samples_per_dataset if max_samples_per_dataset > 0 else 60000
+    per_hendrycks_config_cap = max(1, per_dataset_cap // max(1, len(HENDRYCKS_MATH_CONFIGS)))
+
+    samples: List[str] = []
+    samples.extend(
+        _load_math_component_texts(
+            dataset_name="openai/gsm8k",
+            config_name="main",
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed,
+        )
+    )
+    samples.extend(
+        _load_math_component_texts(
+            dataset_name="openai/gsm8k",
+            config_name="socratic",
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 1,
+        )
+    )
+    for i, cfg_name in enumerate(HENDRYCKS_MATH_CONFIGS):
+        samples.extend(
+            _load_math_component_texts(
+                dataset_name="EleutherAI/hendrycks_math",
+                config_name=cfg_name,
+                max_samples=per_hendrycks_config_cap,
+                cache_dir=cache_dir,
+                seed=seed + 10 + i,
+            )
+        )
+    samples.extend(
+        _load_math_component_texts(
+            dataset_name="ChilleD/SVAMP",
+            config_name=None,
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 20,
+        )
+    )
+    try:
+        samples.extend(
+            _load_math_component_texts(
+                dataset_name="mu-nlpc/mawps",
+                config_name=None,
+                max_samples=per_dataset_cap,
+                cache_dir=cache_dir,
+                seed=seed + 21,
+            )
+        )
+    except Exception:
+        samples.extend(
+            _load_math_component_texts(
+                dataset_name="mwpt5/MAWPS",
+                config_name=None,
+                max_samples=per_dataset_cap,
+                cache_dir=cache_dir,
+                seed=seed + 21,
+            )
+        )
+    samples.extend(generate_easy_arithmetic_samples(easy_math_samples, seed=seed + 33))
+    return samples
+
+
 def _cap_samples(samples: List[str], max_samples: int, seed: int) -> List[str]:
     if max_samples <= 0 or len(samples) <= max_samples:
         return samples
@@ -747,12 +873,57 @@ def _normalize_math_pair(question: str, steps: List[str], final_answer: str) -> 
     final = _to_clean_text(final_answer)
     if not q or not final:
         return ""
-    distilled_steps = _distill_reasoning_steps(steps, max_steps=4)
+    distilled_steps = _distill_reasoning_steps(steps, max_steps=3)
     if not distilled_steps:
-        distilled_steps = ["Solve this carefully, one step at a time."]
+        distilled_steps = ["Rearrange the equation.", "Compute the value."]
     user_text = f"Q: {q}\nA:"
     assistant_text = _format_reasoning_answer(distilled_steps, final)
     return normalize_sample(user_text, assistant_text, mode="math")
+
+
+def repeat_consistency_samples(samples: List[str], repeat_factor: int, seed: int) -> List[str]:
+    if repeat_factor <= 1 or not samples:
+        return samples
+    rng = random.Random(seed)
+    expanded = list(samples)
+    for _ in range(repeat_factor - 1):
+        # duplicate a shuffled copy of the same exact samples
+        dup = list(samples)
+        rng.shuffle(dup)
+        expanded.extend(dup)
+    return expanded
+
+
+def generate_easy_arithmetic_samples(num_samples: int, seed: int) -> List[str]:
+    if num_samples <= 0:
+        return []
+    rng = random.Random(seed)
+    ops = ["+", "-", "*"]
+    out: List[str] = []
+    for _ in range(num_samples):
+        a = rng.randint(0, 50)
+        b = rng.randint(0, 50)
+        op = rng.choice(ops)
+        if op == "+":
+            ans = a + b
+            q = f"{a} + {b}"
+            steps = [f"Add {a} and {b}."]
+        elif op == "-":
+            if b > a:
+                a, b = b, a
+            ans = a - b
+            q = f"{a} - {b}"
+            steps = [f"Subtract {b} from {a}."]
+        else:
+            a = rng.randint(0, 25)
+            b = rng.randint(0, 25)
+            ans = a * b
+            q = f"{a} * {b}"
+            steps = [f"Multiply {a} by {b}."]
+        text = _normalize_math_pair(q, steps, str(ans))
+        if text:
+            out.append(text)
+    return out
 
 
 def _load_math_component_texts(
@@ -790,7 +961,10 @@ def _load_math_component_texts(
             question = f"{body} {q_part}".strip() if body and q_part else (q_part or body)
             answer = _pick_first_text(record, ["Answer", "answer", "final_answer"])
             equation = _pick_first_text(record, ["Equation", "equation"])
-            steps = [f"Form equation: {equation}"] if equation else ["Translate to arithmetic."]
+            if equation:
+                steps = [f"Use equation {equation}.", "Compute step by step."]
+            else:
+                steps = ["Translate to arithmetic.", "Compute step by step."]
             text = _normalize_math_pair(question, steps, answer)
         elif dataset_name in ("mu-nlpc/mawps", "mwpt5/MAWPS"):
             body = _pick_first_text(record, ["Body", "body", "context"])
@@ -798,7 +972,10 @@ def _load_math_component_texts(
             question = f"{body} {q_part}".strip() if body and q_part else (q_part or body)
             answer = _pick_first_text(record, ["Answer", "answer", "final_answer", "lSolutions", "solution"])
             equation = _pick_first_text(record, ["Equation", "equation", "template", "equation_template"])
-            steps = [f"Form equation: {equation}"] if equation else ["Translate words into arithmetic."]
+            if equation:
+                steps = [f"Use equation {equation}.", "Compute step by step."]
+            else:
+                steps = ["Translate words into arithmetic.", "Compute step by step."]
             text = _normalize_math_pair(question, steps, str(answer))
         else:
             text = ""
@@ -810,7 +987,9 @@ def _load_math_component_texts(
         f"Loaded {len(local)} samples from {dataset_name}"
         f"{'/' + config_name if config_name else ''} ({split_name})."
     )
-    return _cap_samples(local, max_samples, seed)
+    local = _cap_samples(local, max_samples, seed)
+    local = repeat_consistency_samples(local, repeat_factor=MATH_REPEAT_FACTOR, seed=seed + 911)
+    return local
 
 
 def _load_text_component_texts(
@@ -1015,12 +1194,39 @@ def mix_grouped_samples(
     return mixed
 
 
+def rebalance_group_weights(
+    grouped: Dict[str, List[str]],
+    base_weights: Dict[str, float],
+    math_fraction: float,
+) -> Dict[str, float]:
+    if not 0.0 < math_fraction < 1.0:
+        return {k: base_weights[k] for k in grouped.keys()}
+
+    math_groups = {"gsm8k", "hendrycks_math", "svamp_mawps"}
+    active = set(grouped.keys())
+    active_math = [g for g in math_groups if g in active]
+    active_text = [g for g in grouped.keys() if g not in math_groups]
+    if not active_math or not active_text:
+        return {k: base_weights[k] for k in grouped.keys()}
+
+    math_base_sum = sum(base_weights[g] for g in active_math)
+    text_base_sum = sum(base_weights[g] for g in active_text)
+    out: Dict[str, float] = {}
+    for g in active_math:
+        out[g] = (base_weights[g] / math_base_sum) * math_fraction
+    for g in active_text:
+        out[g] = (base_weights[g] / text_base_sum) * (1.0 - math_fraction)
+    return out
+
+
 def load_hf_general_stack_texts(
     max_samples_per_dataset: int,
     cache_dir: Optional[str],
     seed: int,
     mixed_total_samples: int = 0,
     skip_stack: bool = False,
+    math_fraction: float = 0.5,
+    easy_math_samples: int = 0,
 ) -> Tuple[List[str], Dict[str, int]]:
     per_dataset_cap = max_samples_per_dataset if max_samples_per_dataset > 0 else 60000
     per_hendrycks_config_cap = max(1, per_dataset_cap // max(1, len(HENDRYCKS_MATH_CONFIGS)))
@@ -1075,7 +1281,7 @@ def load_hf_general_stack_texts(
             max_samples=per_dataset_cap,
             cache_dir=cache_dir,
             seed=seed + 2,
-        ) + mawps,
+        ) + mawps + generate_easy_arithmetic_samples(easy_math_samples, seed=seed + 34),
         "wikipedia": _load_text_component_texts(
             dataset_name="wikipedia",
             config_name="20220301.en",
@@ -1107,7 +1313,7 @@ def load_hf_general_stack_texts(
     else:
         print("Skipping the_stack dataset (--skip_stack enabled).")
 
-    active_weights = {k: DATASET_GROUP_WEIGHTS[k] for k in grouped.keys()}
+    active_weights = rebalance_group_weights(grouped, DATASET_GROUP_WEIGHTS, math_fraction=math_fraction)
     counts = {group: len(samples) for group, samples in grouped.items()}
     mixed = mix_grouped_samples(
         grouped,
@@ -1391,6 +1597,7 @@ def train_one_epoch(
     use_fp16: bool = False,
     on_periodic_checkpoint: Optional[Callable[[int], None]] = None,
     save_every_seconds: float = 0.0,
+    save_every_steps: int = 0,
 ) -> Tuple[float, int]:
     if grad_accum_steps < 1:
         raise ValueError("grad_accum_steps must be >= 1")
@@ -1401,6 +1608,7 @@ def train_one_epoch(
     update_steps = 0
     accum_micro_steps = 0
     last_periodic_ckpt = time.monotonic()
+    last_periodic_step = 0
 
     optimizer.zero_grad(set_to_none=True)
 
@@ -1422,11 +1630,19 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         update_steps += 1
-        if on_periodic_checkpoint is not None and save_every_seconds > 0:
-            now = time.monotonic()
-            if (now - last_periodic_ckpt) >= save_every_seconds:
+        if on_periodic_checkpoint is not None:
+            should_save = False
+            if save_every_seconds > 0:
+                now = time.monotonic()
+                if (now - last_periodic_ckpt) >= save_every_seconds:
+                    last_periodic_ckpt = now
+                    should_save = True
+            if save_every_steps > 0 and (update_steps - last_periodic_step) >= save_every_steps:
+                last_periodic_step = update_steps
+                should_save = True
+            if should_save:
+                last_periodic_step = update_steps
                 on_periodic_checkpoint(update_steps)
-                last_periodic_ckpt = now
 
     for batch_idx, (input_ids, targets) in enumerate(loader):
         input_ids = input_ids.to(device)
@@ -1473,6 +1689,54 @@ def evaluate(model: ARTM, loader: DataLoader, device: torch.device) -> float:
     return total_loss / max(1, steps)
 
 
+def build_math_holdout(
+    texts: List[str],
+    max_items: int,
+    seed: int,
+) -> List[Tuple[str, str]]:
+    pairs: List[Tuple[str, str]] = []
+    for text in texts:
+        if "<user>" not in text or "<assistant>" not in text:
+            continue
+        try:
+            user_part = text.split("<user>\n", 1)[1].split("\n\n<assistant>", 1)[0].strip()
+            assistant_part = text.split("<assistant>\n", 1)[1].strip()
+        except Exception:
+            continue
+        if not user_part.startswith("Q:"):
+            continue
+        target = _extract_final_answer_text(assistant_part)
+        if not target:
+            continue
+        pairs.append((user_part, target))
+
+    if len(pairs) <= max_items or max_items <= 0:
+        return pairs
+    rng = random.Random(seed)
+    rng.shuffle(pairs)
+    return pairs[:max_items]
+
+
+@torch.no_grad()
+def evaluate_math_exact_match(
+    model: ARTM,
+    tokenizer: MathCharTokenizer,
+    holdout: List[Tuple[str, str]],
+    device: torch.device,
+) -> float:
+    if not holdout:
+        return 0.0
+    correct = 0
+    raw_model = unwrap_model(model)
+    for prompt, target in holdout:
+        pred = generate(raw_model, tokenizer, prompt, max_new_tokens=48, temperature=0.0, device=device)
+        pred_final = _extract_final_answer_text(pred).strip()
+        tgt = target.strip()
+        if pred_final == tgt:
+            correct += 1
+    return correct / len(holdout)
+
+
 @torch.no_grad()
 def generate(
     model: ARTM,
@@ -1480,6 +1744,7 @@ def generate(
     prompt: str,
     max_new_tokens: int = 80,
     temperature: float = 0.0,
+    top_p: float = 1.0,
     device: Optional[torch.device] = None,
 ) -> str:
     if device is None:
@@ -1496,7 +1761,17 @@ def generate(
 
         if temperature > 0:
             probs = F.softmax(next_logits / temperature, dim=-1)
-            next_id = int(torch.multinomial(probs, num_samples=1).item())
+            if 0.0 < top_p < 1.0:
+                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+                cdf = torch.cumsum(sorted_probs, dim=-1)
+                keep = cdf <= top_p
+                keep[..., 0] = True
+                filtered = torch.where(keep, sorted_probs, torch.zeros_like(sorted_probs))
+                filtered = filtered / filtered.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                next_sorted = int(torch.multinomial(filtered, num_samples=1).item())
+                next_id = int(sorted_idx[next_sorted].item())
+            else:
+                next_id = int(torch.multinomial(probs, num_samples=1).item())
         else:
             next_id = int(torch.argmax(next_logits).item())
 
@@ -1581,10 +1856,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf_max_samples_per_dataset", type=int, default=0)
     parser.add_argument("--hf_mixed_total_samples", type=int, default=0)
     parser.add_argument("--skip_stack", action="store_true")
+    parser.add_argument("--math_fraction", type=float, default=0.5)
     parser.add_argument("--hf_cache_dir", type=str, default="")
     parser.add_argument("--synthetic_equation_samples", type=int, default=0)
-    parser.add_argument("--out_dir", type=str, default="./artm_checkpoints")
+    parser.add_argument("--out_dir", type=str, default="/kaggle/working/artm_ckpts")
     parser.add_argument("--resume_from", type=str, default="")
+    parser.add_argument("--phase2_preset", action="store_true")
+    parser.add_argument("--short_response_mode", action="store_true")
+    parser.add_argument("--math_reasoning_style", type=str, default="steps", choices=["steps", "final_only"])
+    parser.add_argument("--max_chat_chars", type=int, default=220)
+    parser.add_argument("--filter_noisy_samples", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--max_sample_chars", type=int, default=1400)
+    parser.add_argument("--math_repeat_factor", type=int, default=2)
+    parser.add_argument("--easy_math_samples", type=int, default=6000)
 
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -1602,7 +1886,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--activation", type=str, default="gelu", choices=["relu", "gelu"])
     parser.add_argument("--rope_base", type=float, default=10000.0)
-    parser.add_argument("--label_smoothing", type=float, default=0.05)
+    parser.add_argument("--label_smoothing", type=float, default=0.02)
     parser.add_argument(
         "--gradient_checkpointing",
         action=argparse.BooleanOptionalAction,
@@ -1622,7 +1906,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad_accum_steps", type=int, default=1)
 
     parser.add_argument("--save_every", type=int, default=1)
+    parser.add_argument("--save_every_steps", type=int, default=200)
     parser.add_argument("--save_every_minutes", type=float, default=0.0)
+    parser.add_argument("--save_every_seconds", type=float, default=120.0)
+    parser.add_argument("--math_holdout_size", type=int, default=100)
+    parser.add_argument("--run_math_holdout_eval", action="store_true")
+    parser.add_argument("--sample_chat_temperature", type=float, default=0.7)
+    parser.add_argument("--sample_math_temperature", type=float, default=0.15)
+    parser.add_argument("--sample_top_p", type=float, default=0.9)
     parser.add_argument("--export_int4", action="store_true")
 
     return parser.parse_args()
@@ -1637,6 +1928,25 @@ def main() -> None:
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
+    global SHORT_RESPONSE_MODE, MATH_REASONING_STYLE, MAX_CHAT_CHARS
+    global FILTER_NOISY_SAMPLES, MAX_SAMPLE_CHARS, MATH_REPEAT_FACTOR
+    SHORT_RESPONSE_MODE = bool(args.short_response_mode)
+    MATH_REASONING_STYLE = args.math_reasoning_style
+    MAX_CHAT_CHARS = max(32, int(args.max_chat_chars))
+    FILTER_NOISY_SAMPLES = bool(args.filter_noisy_samples)
+    MAX_SAMPLE_CHARS = max(128, int(args.max_sample_chars))
+    MATH_REPEAT_FACTOR = max(1, int(args.math_repeat_factor))
+
+    if args.phase2_preset:
+        # Phase-2 polish: low LR and short fine-tune horizon on math-centric data.
+        args.lr = min(args.lr, 3e-5)
+        args.epochs = min(args.epochs, 2)
+        args.use_hf_math_datasets = True
+        args.use_hf_general_stack = False
+        print(
+            f"Phase-2 preset enabled: lr={args.lr:g}, epochs={args.epochs}, "
+            "forcing --use_hf_math_datasets"
+        )
 
     if args.cpu_threads > 0:
         torch.set_num_threads(args.cpu_threads)
@@ -1671,6 +1981,8 @@ def main() -> None:
             cache_dir=hf_cache_dir,
             seed=args.seed,
             skip_stack=args.skip_stack,
+            math_fraction=args.math_fraction,
+            easy_math_samples=args.easy_math_samples,
         )
         all_texts.extend(mixed_hf_texts)
         print(
@@ -1679,16 +1991,12 @@ def main() -> None:
         )
     elif args.use_hf_math_datasets:
         hf_cache_dir = args.hf_cache_dir.strip() or None
-        raw_math_texts = load_hf_math_texts(
+        local_math = load_hf_math_structured_samples(
             max_samples_per_dataset=args.hf_max_samples_per_dataset,
             cache_dir=hf_cache_dir,
+            seed=args.seed,
+            easy_math_samples=args.easy_math_samples,
         )
-        local_math = []
-        for text in raw_math_texts:
-            user_text, assistant_text = _extract_user_assistant_from_math_text(text)
-            normalized = normalize_sample(user_text, assistant_text, mode="math")
-            if normalized:
-                local_math.append(normalized)
         if args.synthetic_equation_samples > 0:
             synthetic_raw = generate_synthetic_linear_equation_texts(
                 num_samples=args.synthetic_equation_samples,
@@ -1708,6 +2016,7 @@ def main() -> None:
         )
 
     train_texts, val_texts = split_train_val(all_texts, args.val_fraction, args.seed)
+    math_holdout = build_math_holdout(val_texts, max_items=args.math_holdout_size, seed=args.seed + 99)
 
     resume_payload: Optional[Dict[str, Any]] = None
     start_epoch = 1
@@ -1767,6 +2076,8 @@ def main() -> None:
     print(f"Device: {device}")
     print(f"Train samples: {len(train_texts)}")
     print(f"Val samples: {len(val_texts)}")
+    if args.run_math_holdout_eval:
+        print(f"Math holdout size: {len(math_holdout)}")
     print(f"Vocab size: {tokenizer.vocab_size}")
     print(f"Parameters: {param_count:,}")
     print(f"Estimated size FP32: {fp32_mb:.2f} MB | INT8: {int8_mb:.2f} MB | INT4: {int4_mb:.2f} MB")
@@ -1819,6 +2130,17 @@ def main() -> None:
             scheduler.step()
     best_val_loss = float("inf")
     for epoch in range(start_epoch, args.epochs + 1):
+        save_checkpoint(
+            out_dir=out_dir,
+            filename=f"start_epoch_{epoch}.pt",
+            model=model,
+            tokenizer=tokenizer,
+            cfg=cfg,
+            optimizer=optimizer,
+            epoch=epoch,
+            step=global_step,
+        )
+
         def _periodic_ckpt(epoch_update_steps: int) -> None:
             step_now = global_step + epoch_update_steps
             filename = f"artm_epoch_{epoch}_step_{step_now}.pt"
@@ -1832,7 +2154,17 @@ def main() -> None:
                 epoch=epoch,
                 step=step_now,
             )
-            print(f"[Autosave] Wrote checkpoint: {out_dir / filename}")
+            save_checkpoint(
+                out_dir=out_dir,
+                filename="latest.pt",
+                model=model,
+                tokenizer=tokenizer,
+                cfg=cfg,
+                optimizer=optimizer,
+                epoch=epoch,
+                step=step_now,
+            )
+            print(f"[Autosave] Step {step_now} saved (latest + epoch file)")
 
         train_loss, update_steps = train_one_epoch(
             model=model,
@@ -1844,8 +2176,9 @@ def main() -> None:
             grad_accum_steps=args.grad_accum_steps,
             scaler=scaler,
             use_fp16=use_fp16,
-            on_periodic_checkpoint=_periodic_ckpt if args.save_every_minutes > 0 else None,
-            save_every_seconds=max(0.0, args.save_every_minutes * 60.0),
+            on_periodic_checkpoint=_periodic_ckpt,
+            save_every_seconds=max(0.0, max(args.save_every_seconds, args.save_every_minutes * 60.0)),
+            save_every_steps=max(0, args.save_every_steps),
         )
         global_step += update_steps
         train_ppl = math.exp(min(20.0, train_loss))
@@ -1877,10 +2210,25 @@ def main() -> None:
             tokenizer,
             "Question: If 2x + 5 = 13, what is x?\nAnswer:",
             max_new_tokens=60,
-            temperature=0.0,
+            temperature=args.sample_math_temperature,
+            top_p=args.sample_top_p,
             device=device,
         )
-        print("\n[Sample Output]\n", sample, "\n")
+        chat_sample = generate(
+            unwrap_model(model),
+            tokenizer,
+            "User: hello\nAssistant:",
+            max_new_tokens=40,
+            temperature=args.sample_chat_temperature,
+            top_p=args.sample_top_p,
+            device=device,
+        )
+        print("\n[Math Sample]\n", sample, "\n")
+        print("[Chat Sample]\n", chat_sample, "\n")
+
+        if args.run_math_holdout_eval and math_holdout:
+            em = evaluate_math_exact_match(unwrap_model(model), tokenizer, math_holdout, device)
+            print(f"[Math Holdout] exact_match={em * 100:.2f}% on {len(math_holdout)} samples")
 
         if epoch % args.save_every == 0:
             save_checkpoint(
