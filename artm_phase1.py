@@ -983,24 +983,26 @@ def mix_grouped_samples(
     grouped_texts: Dict[str, List[str]],
     seed: int,
     total_samples: int = 0,
+    group_weights: Optional[Dict[str, float]] = None,
 ) -> List[str]:
-    required_groups = list(DATASET_GROUP_WEIGHTS.keys())
+    weights = group_weights or DATASET_GROUP_WEIGHTS
+    required_groups = list(weights.keys())
     missing = [g for g in required_groups if len(grouped_texts.get(g, [])) == 0]
     if missing:
         raise ValueError(f"Missing required dataset groups: {missing}")
 
     rng = random.Random(seed)
-    weights_sum = sum(DATASET_GROUP_WEIGHTS.values())
+    weights_sum = sum(weights.values())
 
     if total_samples <= 0:
-        capacity = min(len(grouped_texts[g]) / DATASET_GROUP_WEIGHTS[g] for g in required_groups)
+        capacity = min(len(grouped_texts[g]) / weights[g] for g in required_groups)
         total_samples = int(capacity * weights_sum)
 
     total_samples = max(total_samples, 1)
     mixed: List[str] = []
 
     for group in required_groups:
-        group_weight = DATASET_GROUP_WEIGHTS[group] / weights_sum
+        group_weight = weights[group] / weights_sum
         target_count = max(1, int(round(total_samples * group_weight)))
         pool = grouped_texts[group]
         if target_count <= len(pool):
@@ -1018,6 +1020,7 @@ def load_hf_general_stack_texts(
     cache_dir: Optional[str],
     seed: int,
     mixed_total_samples: int = 0,
+    skip_stack: bool = False,
 ) -> Tuple[List[str], Dict[str, int]]:
     per_dataset_cap = max_samples_per_dataset if max_samples_per_dataset > 0 else 60000
     per_hendrycks_config_cap = max(1, per_dataset_cap // max(1, len(HENDRYCKS_MATH_CONFIGS)))
@@ -1089,20 +1092,29 @@ def load_hf_general_stack_texts(
             seed=seed + 11,
             source_key_candidates=["text", "content"],
         ),
-        "the_stack": _load_code_component_texts(
-            max_samples=per_dataset_cap,
-            cache_dir=cache_dir,
-            seed=seed + 12,
-        ),
         "instruction_chat": _load_instruction_chat_component_texts(
             max_samples=per_dataset_cap,
             cache_dir=cache_dir,
             seed=seed + 13,
         ),
     }
+    if not skip_stack:
+        grouped["the_stack"] = _load_code_component_texts(
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 12,
+        )
+    else:
+        print("Skipping the_stack dataset (--skip_stack enabled).")
 
+    active_weights = {k: DATASET_GROUP_WEIGHTS[k] for k in grouped.keys()}
     counts = {group: len(samples) for group, samples in grouped.items()}
-    mixed = mix_grouped_samples(grouped, seed=seed, total_samples=mixed_total_samples)
+    mixed = mix_grouped_samples(
+        grouped,
+        seed=seed,
+        total_samples=mixed_total_samples,
+        group_weights=active_weights,
+    )
     return mixed, counts
 
 
@@ -1568,6 +1580,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use_hf_math_datasets", action="store_true")
     parser.add_argument("--hf_max_samples_per_dataset", type=int, default=0)
     parser.add_argument("--hf_mixed_total_samples", type=int, default=0)
+    parser.add_argument("--skip_stack", action="store_true")
     parser.add_argument("--hf_cache_dir", type=str, default="")
     parser.add_argument("--synthetic_equation_samples", type=int, default=0)
     parser.add_argument("--out_dir", type=str, default="./artm_checkpoints")
@@ -1657,6 +1670,7 @@ def main() -> None:
             mixed_total_samples=args.hf_mixed_total_samples,
             cache_dir=hf_cache_dir,
             seed=args.seed,
+            skip_stack=args.skip_stack,
         )
         all_texts.extend(mixed_hf_texts)
         print(
