@@ -1613,7 +1613,7 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
 
     def _optimizer_step() -> None:
-        nonlocal update_steps, last_periodic_ckpt
+        nonlocal update_steps, last_periodic_ckpt, last_periodic_step
         if scaler is not None and use_fp16:
             scaler.unscale_(optimizer)
         if grad_clip > 0:
@@ -1648,7 +1648,7 @@ def train_one_epoch(
         input_ids = input_ids.to(device)
         targets = targets.to(device)
 
-        autocast_ctx = torch.cuda.amp.autocast(dtype=torch.float16) if use_fp16 else nullcontext()
+        autocast_ctx = torch.amp.autocast("cuda", dtype=torch.float16) if use_fp16 else nullcontext()
         with autocast_ctx:
             _, loss = model(input_ids, targets)
             raw_loss = float(loss.item())
