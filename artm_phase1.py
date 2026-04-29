@@ -444,7 +444,8 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
     if mode == "math":
         system_prompt = MATH_SYSTEM_PROMPT
         # Always extract just the final numeric answer for clean format
-        assistant_text = _extract_final_answer_text(assistant_text)
+        final = _extract_final_answer_text(assistant_text)
+        assistant_text = f"Answer: {final}"
     elif mode == "emotion":
         system_prompt = EMOTION_SYSTEM_PROMPT
     else:
@@ -589,8 +590,8 @@ def _distill_reasoning_steps(steps: List[str], max_steps: int = 4) -> List[str]:
 
 
 def _format_reasoning_answer(steps: List[str], final_answer: str) -> str:
-    # Always output just the final answer for consistent format
-    return _to_clean_text(final_answer)
+    # Always output clean "Answer: X" format
+    return f"Answer: {_to_clean_text(final_answer)}"
 
 
 def _hf_record_to_text(dataset_name: str, record: Dict[str, Any]) -> Optional[str]:
@@ -2148,8 +2149,8 @@ def main() -> None:
         )
 
     if args.phase2_preset:
-        # Phase 2: Pure math fine-tuning — low LR, 3-5 epochs, math-only data
-        args.lr = min(args.lr, 5e-5)
+        # Phase 2: Pure math fine-tuning — moderate LR, 3-5 epochs, math-only data
+        args.lr = min(args.lr, 1.5e-4)
         args.epochs = max(min(args.epochs, 5), 3)
         args.warmup_steps = max(args.warmup_steps, 50)
         print(
