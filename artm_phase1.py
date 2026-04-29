@@ -406,19 +406,18 @@ GENERAL_SYSTEM_PROMPT = (
     "You are a helpful, intelligent, and emotionally aware assistant. "
     "You respond clearly, step-by-step when needed, and adapt tone to the user."
 )
-MATH_SYSTEM_PROMPT = "You are a precise reasoning model. Always solve step-by-step."
+MATH_SYSTEM_PROMPT = "You are a precise math solver. Output only the final numeric answer."
 EMOTION_SYSTEM_PROMPT = (
     "You are a supportive and empathetic assistant. You validate feelings and respond calmly."
 )
 
 DATASET_GROUP_WEIGHTS: Dict[str, float] = {
     "gsm8k": 0.35,
-    "hendrycks_math": 0.23,
+    "hendrycks_math": 0.25,
     "svamp_mawps": 0.15,
-    "wikipedia": 0.08,
-    "openwebtext": 0.04,
+    "wikipedia": 0.05,
     "the_stack": 0.05,
-    "instruction_chat": 0.10,
+    "instruction_chat": 0.05,
 }
 
 HENDRYCKS_MATH_CONFIGS: List[str] = [
@@ -444,11 +443,8 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
 
     if mode == "math":
         system_prompt = MATH_SYSTEM_PROMPT
-        if MATH_REASONING_STYLE == "final_only":
-            assistant_text = _extract_final_answer_text(assistant_text)
-        elif "Step 1:" not in assistant_text:
-            final = _extract_final_answer_text(assistant_text)
-            assistant_text = f"Step 1: Solve the equation.\nStep 2: Compute carefully.\nFinal Answer: {final}"
+        # Always extract just the final numeric answer for clean format
+        assistant_text = _extract_final_answer_text(assistant_text)
     elif mode == "emotion":
         system_prompt = EMOTION_SYSTEM_PROMPT
     else:
@@ -593,13 +589,8 @@ def _distill_reasoning_steps(steps: List[str], max_steps: int = 4) -> List[str]:
 
 
 def _format_reasoning_answer(steps: List[str], final_answer: str) -> str:
-    if MATH_REASONING_STYLE == "final_only":
-        return _to_clean_text(final_answer)
-    lines: List[str] = []
-    for i, step in enumerate(steps, start=1):
-        lines.append(f"Step {i}: {step}")
-    lines.append(f"Final Answer: {final_answer}")
-    return "\n".join(lines)
+    # Always output just the final answer for consistent format
+    return _to_clean_text(final_answer)
 
 
 def _hf_record_to_text(dataset_name: str, record: Dict[str, Any]) -> Optional[str]:
@@ -876,7 +867,7 @@ def _normalize_math_pair(question: str, steps: List[str], final_answer: str) -> 
     distilled_steps = _distill_reasoning_steps(steps, max_steps=3)
     if not distilled_steps:
         distilled_steps = ["Rearrange the equation.", "Compute the value."]
-    user_text = f"Q: {q}\nA:"
+    user_text = f"Question: {q}"
     assistant_text = _format_reasoning_answer(distilled_steps, final)
     return normalize_sample(user_text, assistant_text, mode="math")
 
@@ -1285,21 +1276,13 @@ def load_hf_general_stack_texts(
         "wikipedia": _load_text_component_texts(
             dataset_name="wikipedia",
             config_name="20220301.en",
-            max_samples=per_dataset_cap,
+            max_samples=min(per_dataset_cap, 15000),
             cache_dir=cache_dir,
             seed=seed + 10,
             source_key_candidates=["text"],
         ),
-        "openwebtext": _load_text_component_texts(
-            dataset_name="Skylion007/openwebtext",
-            config_name=None,
-            max_samples=per_dataset_cap,
-            cache_dir=cache_dir,
-            seed=seed + 11,
-            source_key_candidates=["text", "content"],
-        ),
         "instruction_chat": _load_instruction_chat_component_texts(
-            max_samples=per_dataset_cap,
+            max_samples=min(per_dataset_cap, 5000),
             cache_dir=cache_dir,
             seed=seed + 13,
         ),
@@ -1703,7 +1686,7 @@ def build_math_holdout(
             assistant_part = text.split("<assistant>\n", 1)[1].strip()
         except Exception:
             continue
-        if not user_part.startswith("Q:"):
+        if not (user_part.startswith("Q:") or user_part.startswith("Question:")):
             continue
         target = _extract_final_answer_text(assistant_part)
         if not target:
@@ -1791,6 +1774,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     step: int,
+    max_retries: int = 3,
 ) -> None:
     raw_model = unwrap_model(model)
     payload = {
@@ -1801,7 +1785,25 @@ def save_checkpoint(
         "model_config": asdict(cfg),
         "tokenizer": tokenizer.to_dict(),
     }
-    torch.save(payload, out_dir / filename)
+    target = out_dir / filename
+    for attempt in range(1, max_retries + 1):
+        try:
+            tmp = target.with_suffix(".tmp")
+            torch.save(payload, tmp)
+            tmp.replace(target)
+            return
+        except (RuntimeError, OSError) as exc:
+            if attempt < max_retries:
+                print(f"Warning: checkpoint save attempt {attempt}/{max_retries} failed ({exc}). Retrying...")
+                import time as _time
+                _time.sleep(2 * attempt)
+            else:
+                print(f"Error: checkpoint save failed after {max_retries} attempts ({exc}). Skipping.")
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
 
 
 def pack_int4_per_channel(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -1856,7 +1858,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf_max_samples_per_dataset", type=int, default=0)
     parser.add_argument("--hf_mixed_total_samples", type=int, default=0)
     parser.add_argument("--skip_stack", action="store_true")
-    parser.add_argument("--math_fraction", type=float, default=0.5)
+    parser.add_argument("--math_fraction", type=float, default=0.75)
     parser.add_argument("--hf_cache_dir", type=str, default="")
     parser.add_argument("--synthetic_equation_samples", type=int, default=0)
     parser.add_argument("--out_dir", type=str, default="/kaggle/working/artm_ckpts")
@@ -2208,7 +2210,7 @@ def main() -> None:
         sample = generate(
             unwrap_model(model),
             tokenizer,
-            "Question: If 2x + 5 = 13, what is x?\nAnswer:",
+            "Question: If 2x + 5 = 13, what is x?",
             max_new_tokens=60,
             temperature=args.sample_math_temperature,
             top_p=args.sample_top_p,
