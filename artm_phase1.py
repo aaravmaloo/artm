@@ -2287,9 +2287,10 @@ def main() -> None:
         if cfg_dict is None:
             raise ValueError("Checkpoint missing model config.")
         cfg = ARTMConfig(**cfg_dict)
-        start_epoch = int(resume_payload.get("epoch", 0)) + 1
-        global_step = int(resume_payload.get("step", 0))
-        print(f"Resuming from checkpoint: {resume_path} | start_epoch={start_epoch} | step={global_step}")
+        # Always start from epoch 1 — load weights only, ignore old epoch/step counters
+        start_epoch = 1
+        global_step = 0
+        print(f"Resuming from checkpoint: {resume_path} | start_epoch=1 (forced) | step=0 (forced)")
     else:
         tokenizer = MathCharTokenizer.build_from_texts(
             texts=train_texts,
