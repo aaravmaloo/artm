@@ -403,10 +403,10 @@ def format_math_example(question: str, steps: List[str], answer: str) -> str:
 
 
 GENERAL_SYSTEM_PROMPT = (
-    "You are a helpful, intelligent, and emotionally aware assistant. "
+    "[CHAT] You are a helpful, intelligent, and emotionally aware assistant. "
     "You respond clearly, step-by-step when needed, and adapt tone to the user."
 )
-MATH_SYSTEM_PROMPT = "You are a precise math solver. Output only the final numeric answer."
+MATH_SYSTEM_PROMPT = "[MATH] You are a precise reasoning model. Solve step-by-step, then give the final answer."
 EMOTION_SYSTEM_PROMPT = (
     "You are a supportive and empathetic assistant. You validate feelings and respond calmly."
 )
@@ -423,7 +423,6 @@ DATASET_GROUP_WEIGHTS: Dict[str, float] = {
 HENDRYCKS_MATH_CONFIGS: List[str] = [
     "algebra",
     "counting_and_probability",
-    "geometry",
 ]
 
 # Runtime preprocessing knobs set from CLI in main().
@@ -443,9 +442,17 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
 
     if mode == "math":
         system_prompt = MATH_SYSTEM_PROMPT
-        # Always extract just the final numeric answer for clean format
+        # Build step-by-step reasoning with final answer
         final = _extract_final_answer_text(assistant_text)
-        assistant_text = f"Answer: {final}"
+        distilled = _distill_reasoning_steps(
+            [line.strip() for line in assistant_text.split("\n") if line.strip()],
+            max_steps=3,
+        )
+        if not distilled:
+            distilled = ["Solve step by step."]
+        lines = [f"Step {i}: {s}" for i, s in enumerate(distilled, 1)]
+        lines.append(f"Final Answer: {final}")
+        assistant_text = "\n".join(lines)
     elif mode == "emotion":
         system_prompt = EMOTION_SYSTEM_PROMPT
     else:
@@ -461,6 +468,14 @@ def normalize_sample(user_text: str, assistant_text: str, mode: str) -> str:
         if mode == "math":
             final = _extract_final_answer_text(assistant_text)
             if not final or final.lower() == "unknown":
+                return ""
+            # Reject geometry / diagram descriptions (not solvable by a text model)
+            geo_keywords = ["diagram", "figure", "triangle abc", "circle with",
+                            "point on the", "line segment", "draw a", "as shown in"]
+            if any(kw in user_text.lower() for kw in geo_keywords):
+                return ""
+            # Reject non-numeric final answers (expressions, variables, etc.)
+            if final and not re.search(r"\d", final):
                 return ""
 
     return (
@@ -590,8 +605,10 @@ def _distill_reasoning_steps(steps: List[str], max_steps: int = 4) -> List[str]:
 
 
 def _format_reasoning_answer(steps: List[str], final_answer: str) -> str:
-    # Always output clean "Answer: X" format
-    return f"Answer: {_to_clean_text(final_answer)}"
+    # Step-by-step reasoning with final answer
+    lines = [f"Step {i}: {s}" for i, s in enumerate(steps, 1)]
+    lines.append(f"Final Answer: {_to_clean_text(final_answer)}")
+    return "\n".join(lines)
 
 
 def _hf_record_to_text(dataset_name: str, record: Dict[str, Any]) -> Optional[str]:
@@ -2086,7 +2103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--activation", type=str, default="gelu", choices=["relu", "gelu"])
     parser.add_argument("--rope_base", type=float, default=10000.0)
-    parser.add_argument("--label_smoothing", type=float, default=0.02)
+    parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument(
         "--gradient_checkpointing",
         action=argparse.BooleanOptionalAction,
