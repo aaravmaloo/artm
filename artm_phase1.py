@@ -1307,6 +1307,201 @@ def load_hf_general_stack_texts(
     return mixed, counts
 
 
+def load_phase1_base_language_texts(
+    cache_dir: Optional[str],
+    seed: int,
+    total_samples: int = 80000,
+) -> Tuple[List[str], Dict[str, int]]:
+    """Phase 1: Base language model — TinyStories + small Wikipedia only.
+    No math, no chat. Just learn to speak English coherently."""
+    grouped: Dict[str, List[str]] = {}
+
+    # TinyStories — clean, simple English
+    try:
+        ts_split, _ = _load_hf_split_any("roneneldan/TinyStories", None, cache_dir)
+        ts_samples: List[str] = []
+        for i, record in enumerate(ts_split):
+            if total_samples > 0 and i >= total_samples:
+                break
+            if not isinstance(record, dict):
+                continue
+            text = _pick_first_text(record, ["text", "story"])
+            if not text:
+                continue
+            user_text = "Write a short story."
+            assistant_text = text
+            normalized = normalize_sample(user_text, assistant_text, mode="general")
+            if normalized:
+                ts_samples.append(normalized)
+        grouped["tinystories"] = ts_samples
+        print(f"Phase1: Loaded {len(ts_samples)} TinyStories samples.")
+    except Exception as exc:
+        print(f"Warning: failed to load TinyStories ({exc})")
+
+    # Small Wikipedia — language structure
+    try:
+        wiki_samples = _load_text_component_texts(
+            dataset_name="wikipedia",
+            config_name="20220301.en",
+            max_samples=15000,
+            cache_dir=cache_dir,
+            seed=seed + 10,
+            source_key_candidates=["text"],
+        )
+        grouped["wikipedia"] = wiki_samples
+        print(f"Phase1: Loaded {len(wiki_samples)} Wikipedia samples.")
+    except Exception as exc:
+        print(f"Warning: failed to load Wikipedia ({exc})")
+
+    counts = {g: len(s) for g, s in grouped.items()}
+    weights = {g: 1.0 for g in grouped}
+    mixed = mix_grouped_samples(grouped, seed=seed, total_samples=total_samples, group_weights=weights)
+    return mixed, counts
+
+
+def load_phase2_math_only_texts(
+    cache_dir: Optional[str],
+    seed: int,
+    max_samples_per_dataset: int,
+    easy_math_samples: int = 8000,
+    synthetic_equation_samples: int = 5000,
+    total_samples: int = 0,
+) -> Tuple[List[str], Dict[str, int]]:
+    """Phase 2: Pure math fine-tuning — GSM8K, Hendrycks, SVAMP, MAWPS.
+    No chat, no Wikipedia. Strict Question/Answer format."""
+    per_dataset_cap = max_samples_per_dataset if max_samples_per_dataset > 0 else 60000
+    per_hendrycks_config_cap = max(1, per_dataset_cap // max(1, len(HENDRYCKS_MATH_CONFIGS)))
+
+    grouped: Dict[str, List[str]] = {}
+
+    # GSM8K
+    grouped["gsm8k"] = _load_math_component_texts(
+        dataset_name="openai/gsm8k",
+        config_name="main",
+        max_samples=per_dataset_cap,
+        cache_dir=cache_dir,
+        seed=seed,
+    )
+
+    # Hendrycks Math
+    hendrycks: List[str] = []
+    for i, cfg_name in enumerate(HENDRYCKS_MATH_CONFIGS):
+        try:
+            hendrycks.extend(
+                _load_math_component_texts(
+                    dataset_name="EleutherAI/hendrycks_math",
+                    config_name=cfg_name,
+                    max_samples=per_hendrycks_config_cap,
+                    cache_dir=cache_dir,
+                    seed=seed + 1 + i,
+                )
+            )
+        except Exception as exc:
+            print(f"Warning: failed to load hendrycks_math/{cfg_name} ({exc})")
+    if hendrycks:
+        grouped["hendrycks_math"] = hendrycks
+
+    # SVAMP + MAWPS + easy arithmetic
+    mawps: List[str] = []
+    try:
+        mawps = _load_math_component_texts(
+            dataset_name="mu-nlpc/mawps",
+            config_name=None,
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 4,
+        )
+    except Exception:
+        mawps = _load_math_component_texts(
+            dataset_name="mwpt5/MAWPS",
+            config_name=None,
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 4,
+        )
+    grouped["svamp_mawps"] = (
+        _load_math_component_texts(
+            dataset_name="ChilleD/SVAMP",
+            config_name=None,
+            max_samples=per_dataset_cap,
+            cache_dir=cache_dir,
+            seed=seed + 2,
+        )
+        + mawps
+        + generate_easy_arithmetic_samples(easy_math_samples, seed=seed + 34)
+    )
+
+    # Synthetic equations
+    if synthetic_equation_samples > 0:
+        synth_raw = generate_synthetic_linear_equation_texts(
+            num_samples=synthetic_equation_samples,
+            seed=seed + 50,
+        )
+        synth_normalized: List[str] = []
+        for text in synth_raw:
+            user_text, assistant_text = _extract_user_assistant_from_math_text(text)
+            normalized = normalize_sample(user_text, assistant_text, mode="math")
+            if normalized:
+                synth_normalized.append(normalized)
+        if synth_normalized:
+            grouped["synthetic_equations"] = synth_normalized
+
+    counts = {g: len(s) for g, s in grouped.items()}
+    weights = {g: 1.0 for g in grouped}
+    mixed = mix_grouped_samples(grouped, seed=seed, total_samples=total_samples, group_weights=weights)
+    return mixed, counts
+
+
+def load_phase3_instruction_alignment_texts(
+    cache_dir: Optional[str],
+    seed: int,
+    max_samples_per_dataset: int,
+    math_fraction: float = 0.35,
+    total_samples: int = 0,
+) -> Tuple[List[str], Dict[str, int]]:
+    """Phase 3: Instruction alignment — reintroduce chat with math retention.
+    ~35% math + ~65% instruction/chat. Teaches when to chat vs when to solve."""
+    per_dataset_cap = max_samples_per_dataset if max_samples_per_dataset > 0 else 60000
+
+    grouped: Dict[str, List[str]] = {}
+
+    # Keep math in the mix so it doesn't degrade
+    grouped["gsm8k"] = _load_math_component_texts(
+        dataset_name="openai/gsm8k",
+        config_name="main",
+        max_samples=min(per_dataset_cap, 20000),
+        cache_dir=cache_dir,
+        seed=seed,
+    )
+    grouped["svamp_mawps"] = _load_math_component_texts(
+        dataset_name="ChilleD/SVAMP",
+        config_name=None,
+        max_samples=min(per_dataset_cap, 10000),
+        cache_dir=cache_dir,
+        seed=seed + 2,
+    ) + generate_easy_arithmetic_samples(3000, seed=seed + 34)
+
+    # Instruction/chat — the main focus of this phase
+    grouped["instruction_chat"] = _load_instruction_chat_component_texts(
+        max_samples=min(per_dataset_cap, 15000),
+        cache_dir=cache_dir,
+        seed=seed + 13,
+    )
+
+    counts = {g: len(s) for g, s in grouped.items()}
+    math_groups = {"gsm8k", "svamp_mawps"}
+    math_base = sum(1.0 for g in grouped if g in math_groups)
+    chat_base = sum(1.0 for g in grouped if g not in math_groups)
+    weights: Dict[str, float] = {}
+    for g in grouped:
+        if g in math_groups:
+            weights[g] = (1.0 / math_base) * math_fraction if math_base > 0 else 1.0
+        else:
+            weights[g] = (1.0 / chat_base) * (1.0 - math_fraction) if chat_base > 0 else 1.0
+    mixed = mix_grouped_samples(grouped, seed=seed, total_samples=total_samples, group_weights=weights)
+    return mixed, counts
+
+
 def generate_synthetic_linear_equation_texts(
     num_samples: int,
     seed: int,
@@ -1863,7 +2058,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--synthetic_equation_samples", type=int, default=0)
     parser.add_argument("--out_dir", type=str, default="/kaggle/working/artm_ckpts")
     parser.add_argument("--resume_from", type=str, default="")
+    parser.add_argument("--phase1_preset", action="store_true")
     parser.add_argument("--phase2_preset", action="store_true")
+    parser.add_argument("--phase3_preset", action="store_true")
     parser.add_argument("--short_response_mode", action="store_true")
     parser.add_argument("--math_reasoning_style", type=str, default="steps", choices=["steps", "final_only"])
     parser.add_argument("--max_chat_chars", type=int, default=220)
@@ -1939,15 +2136,35 @@ def main() -> None:
     MAX_SAMPLE_CHARS = max(128, int(args.max_sample_chars))
     MATH_REPEAT_FACTOR = max(1, int(args.math_repeat_factor))
 
+    if args.phase1_preset:
+        # Phase 1: Base language — TinyStories + small Wikipedia, higher LR, 2-3 epochs
+        args.lr = max(args.lr, 3e-4)
+        args.epochs = min(args.epochs, 3)
+        args.dropout = min(args.dropout, 0.05)
+        args.warmup_steps = max(args.warmup_steps, 200)
+        print(
+            f"Phase-1 preset enabled: lr={args.lr:g}, epochs={args.epochs}, "
+            "loading TinyStories + Wikipedia only"
+        )
+
     if args.phase2_preset:
-        # Phase-2 polish: low LR and short fine-tune horizon on math-centric data.
-        args.lr = min(args.lr, 3e-5)
-        args.epochs = min(args.epochs, 2)
-        args.use_hf_math_datasets = True
-        args.use_hf_general_stack = False
+        # Phase 2: Pure math fine-tuning — low LR, 3-5 epochs, math-only data
+        args.lr = min(args.lr, 5e-5)
+        args.epochs = max(min(args.epochs, 5), 3)
+        args.warmup_steps = max(args.warmup_steps, 50)
         print(
             f"Phase-2 preset enabled: lr={args.lr:g}, epochs={args.epochs}, "
-            "forcing --use_hf_math_datasets"
+            "loading math-only datasets"
+        )
+
+    if args.phase3_preset:
+        # Phase 3: Instruction alignment — very low LR, 1-2 epochs, chat + math mix
+        args.lr = min(args.lr, 2e-5)
+        args.epochs = min(args.epochs, 2)
+        args.warmup_steps = max(args.warmup_steps, 30)
+        print(
+            f"Phase-3 preset enabled: lr={args.lr:g}, epochs={args.epochs}, "
+            "loading instruction/chat + math retention mix"
         )
 
     if args.cpu_threads > 0:
@@ -1975,7 +2192,41 @@ def main() -> None:
     if args.dataset_path:
         all_texts.extend(load_math_texts(args.dataset_path))
 
-    if args.use_hf_general_stack:
+    hf_cache_dir = args.hf_cache_dir.strip() or None
+
+    if args.phase1_preset:
+        phase1_texts, phase1_counts = load_phase1_base_language_texts(
+            cache_dir=hf_cache_dir,
+            seed=args.seed,
+            total_samples=args.hf_mixed_total_samples or 80000,
+        )
+        all_texts.extend(phase1_texts)
+        print(f"Phase-1 data loaded: {len(phase1_texts)} samples | counts={phase1_counts}")
+
+    elif args.phase2_preset:
+        phase2_texts, phase2_counts = load_phase2_math_only_texts(
+            cache_dir=hf_cache_dir,
+            seed=args.seed,
+            max_samples_per_dataset=args.hf_max_samples_per_dataset,
+            easy_math_samples=args.easy_math_samples,
+            synthetic_equation_samples=args.synthetic_equation_samples or 5000,
+            total_samples=args.hf_mixed_total_samples,
+        )
+        all_texts.extend(phase2_texts)
+        print(f"Phase-2 data loaded: {len(phase2_texts)} samples | counts={phase2_counts}")
+
+    elif args.phase3_preset:
+        phase3_texts, phase3_counts = load_phase3_instruction_alignment_texts(
+            cache_dir=hf_cache_dir,
+            seed=args.seed,
+            max_samples_per_dataset=args.hf_max_samples_per_dataset,
+            math_fraction=0.35,
+            total_samples=args.hf_mixed_total_samples,
+        )
+        all_texts.extend(phase3_texts)
+        print(f"Phase-3 data loaded: {len(phase3_texts)} samples | counts={phase3_counts}")
+
+    elif args.use_hf_general_stack:
         hf_cache_dir = args.hf_cache_dir.strip() or None
         mixed_hf_texts, group_counts = load_hf_general_stack_texts(
             max_samples_per_dataset=args.hf_max_samples_per_dataset,
@@ -2014,7 +2265,8 @@ def main() -> None:
 
     if not all_texts:
         raise ValueError(
-            "Provide --dataset_path and/or use --use_hf_general_stack (or --use_hf_math_datasets)."
+            "Provide --dataset_path, --phase1_preset, --phase2_preset, --phase3_preset, "
+            "--use_hf_general_stack, or --use_hf_math_datasets."
         )
 
     train_texts, val_texts = split_train_val(all_texts, args.val_fraction, args.seed)
