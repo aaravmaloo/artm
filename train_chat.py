@@ -726,9 +726,12 @@ def train(args: argparse.Namespace) -> None:
 
     model = ChatGPT(cfg).to(dev)
 
-    if args.resume_weights:
-        print(f"Loading model weights from {args.resume_weights}")
-        ck = torch.load(args.resume_weights, map_location="cpu")
+    if args.resume_from and args.resume_weights and args.resume_from != args.resume_weights:
+        raise ValueError("Use either --resume_from or --resume_weights (or the same path for both).")
+    resume_path = args.resume_from if args.resume_from else args.resume_weights
+    if resume_path:
+        print(f"Loading model weights from {resume_path}")
+        ck = torch.load(resume_path, map_location="cpu")
         if "model_state" in ck:
             model.load_state_dict(ck["model_state"], strict=False)
         else:
@@ -884,7 +887,8 @@ def parser() -> argparse.ArgumentParser:
 
     p.add_argument("--save_every_epoch", action="store_true")
     p.add_argument("--out_dir", type=str, default="./checkpoints_chat")
-    p.add_argument("--resume_weights", type=str, default="")
+    p.add_argument("--resume_from", type=str, default="", help="Load model weights only for refinement.")
+    p.add_argument("--resume_weights", type=str, default="", help="Backward-compatible alias for --resume_from.")
     p.add_argument("--seed", type=int, default=42)
 
     return p
