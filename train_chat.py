@@ -662,15 +662,59 @@ def tok_corpus(names: Sequence[str], ratios: Sequence[float], streaming: bool, s
             yield t
 
 
+def _tokenizer_json_path(path: Path) -> Path:
+    return path / "tokenizer.json" if path.is_dir() else path
+
+
+def _auto_tokenizer_candidates(args: argparse.Namespace, out_dir: Path) -> List[Path]:
+    cands: List[Path] = [out_dir / "tokenizer" / "tokenizer.json"]
+    resume_path = args.resume_from if args.resume_from else args.resume_weights
+    if resume_path:
+        rp = Path(resume_path)
+        cands.extend(
+            [
+                rp.parent / "tokenizer" / "tokenizer.json",
+                rp.parent / "tokenizer.json",
+            ]
+        )
+    cands.extend(
+        [
+            Path("tokenizer.json"),
+            Path("checkpoints_chat/tokenizer/tokenizer.json"),
+            Path("checkpoints_chat/tokenizer.json"),
+        ]
+    )
+    uniq: List[Path] = []
+    seen = set()
+    for p in cands:
+        k = str(p.resolve()) if p.exists() else str(p)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(p)
+    return uniq
+
+
 def make_tokenizer(args: argparse.Namespace, names: Sequence[str], ratios: Sequence[float], out_dir: Path) -> ChatTokenizer:
     td = out_dir / "tokenizer"
-    tf = td / "tokenizer.json"
-    if args.tokenizer_path:
-        tf = Path(args.tokenizer_path)
-
-    if tf.exists() and not args.force_retrain_tokenizer:
-        print(f"Loading tokenizer from {tf}")
-        return ChatTokenizer.load(tf)
+    explicit = _tokenizer_json_path(Path(args.tokenizer_path)) if args.tokenizer_path else None
+    if explicit is not None:
+        if not explicit.exists() and not args.force_retrain_tokenizer:
+            raise FileNotFoundError(f"Tokenizer path not found: {explicit}")
+        if explicit.exists() and not args.force_retrain_tokenizer:
+            print(f"Loading tokenizer from {explicit}")
+            return ChatTokenizer.load(explicit)
+    elif not args.force_retrain_tokenizer:
+        for cand in _auto_tokenizer_candidates(args, out_dir):
+            cand = _tokenizer_json_path(cand)
+            if cand.exists():
+                print(f"Auto-detected tokenizer at {cand}")
+                return ChatTokenizer.load(cand)
+        resume_path = args.resume_from if args.resume_from else args.resume_weights
+        if resume_path:
+            raise FileNotFoundError(
+                "No tokenizer found for resume run. Pass --tokenizer_path "
+                "(file or folder containing tokenizer.json)."
+            )
 
     print("Training tokenizer...")
     it = tok_corpus(names, ratios, args.dataset_streaming, args.seed, args.shuffle_buffer, args.tokenizer_samples, args.oasst_english_only)
@@ -849,7 +893,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--oasst_english_only", action="store_true", default=True)
 
     p.add_argument("--vocab_size", type=int, default=8192)
-    p.add_argument("--tokenizer_path", type=str, default="")
+    p.add_argument("--tokenizer_path", type=str, default="", help="Path to tokenizer.json or folder containing it")
     p.add_argument("--force_retrain_tokenizer", action="store_true")
     p.add_argument("--tokenizer_samples", type=int, default=200000)
     p.add_argument("--tokenizer_min_freq", type=int, default=2)
