@@ -184,9 +184,11 @@ def worker(
     rank: int,
     world_size: int,
     args: argparse.Namespace,
-    prompts_subset: List[Dict],
-    temp_output: str,
+    subsets: List[List[Dict]],
+    temp_files: List[str],
 ) -> None:
+    prompts_subset = subsets[rank]
+    temp_output = temp_files[rank]
     set_seed(args.seed + rank)
     device = torch.device(f"cuda:{rank}")
 
