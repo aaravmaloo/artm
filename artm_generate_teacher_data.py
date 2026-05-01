@@ -170,6 +170,12 @@ def render_chat(tokenizer, prompt: str) -> torch.Tensor:
             add_generation_prompt=True,
             return_tensors="pt",
         )
+        # Handle cases where apply_chat_template returns BatchEncoding or dict
+        if not torch.is_tensor(input_ids):
+            if hasattr(input_ids, "input_ids"):
+                input_ids = input_ids.input_ids
+            elif isinstance(input_ids, dict):
+                input_ids = input_ids["input_ids"]
     else:
         fallback = f"User: {prompt}\nAssistant:"
         input_ids = tokenizer(fallback, return_tensors="pt").input_ids
