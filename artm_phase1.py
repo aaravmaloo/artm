@@ -52,6 +52,15 @@ def parse_csv(s: str) -> List[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
+def parse_dataset_splits(s: str, n: int) -> List[str]:
+    if not s:
+        return ["train"] * n
+    vals = [x.strip() for x in s.split(",") if x.strip()]
+    if len(vals) != n:
+        raise ValueError(f"dataset_splits must have {n} values")
+    return vals
+
+
 def parse_ratios(s: str, n: int) -> List[float]:
     if not s:
         return [1.0 / n] * n
@@ -273,6 +282,7 @@ class MixedChat(IterableDataset):
     def __init__(
         self,
         names: Sequence[str],
+        splits: Sequence[str],
         ratios: Sequence[float],
         tok: ChatTokenizer,
         seq_len: int,
@@ -286,6 +296,7 @@ class MixedChat(IterableDataset):
     ):
         super().__init__()
         self.names = list(names)
+        self.splits = list(splits)
         self.ratios = list(ratios)
         self.tok = tok
         self.seq_len = seq_len
@@ -301,12 +312,12 @@ class MixedChat(IterableDataset):
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
-    def _rows(self, name: str, seed: int) -> Iterable[dict]:
-        ds = load_dataset(name, split="train", streaming=self.streaming)
+    def _rows(self, name: str, split: str, seed: int) -> Iterable[dict]:
+        ds = load_dataset(name, split=split, streaming=self.streaming)
         return ds.shuffle(seed=seed, buffer_size=self.shuffle_buffer) if self.streaming else ds.shuffle(seed=seed)
 
-    def _pairs(self, name: str, seed: int) -> Iterator[Tuple[str, str]]:
-        rows = self._rows(name, seed)
+    def _pairs(self, name: str, split: str, seed: int) -> Iterator[Tuple[str, str]]:
+        rows = self._rows(name, split, seed)
         lname = name.lower()
         if "oasst1" in lname:
             yield from iter_oasst(rows, seed, self.oasst_english_only)
@@ -321,7 +332,7 @@ class MixedChat(IterableDataset):
         base = self.seed + self.epoch * 100003 + wid * 7919
         rng = random.Random(base)
         seeds = [base + i * 9973 for i in range(len(self.names))]
-        iters = [self._pairs(self.names[i], seeds[i]) for i in range(len(self.names))]
+        iters = [self._pairs(self.names[i], self.splits[i], seeds[i]) for i in range(len(self.names))]
 
         produced = 0
         seen = 0
@@ -331,7 +342,7 @@ class MixedChat(IterableDataset):
                 u, a = next(iters[i])
             except StopIteration:
                 seeds[i] += 1
-                iters[i] = self._pairs(self.names[i], seeds[i])
+                iters[i] = self._pairs(self.names[i], self.splits[i], seeds[i])
                 try:
                     u, a = next(iters[i])
                 except StopIteration:
@@ -637,18 +648,27 @@ def save_ckpt(out_dir: Path, epoch: int, model: nn.Module, opt: torch.optim.Opti
     return p
 
 
-def tok_corpus(names: Sequence[str], ratios: Sequence[float], streaming: bool, seed: int, shuffle_buffer: int, max_texts: int, oasst_english_only: bool) -> Iterator[str]:
+def tok_corpus(
+    names: Sequence[str],
+    splits: Sequence[str],
+    ratios: Sequence[float],
+    streaming: bool,
+    seed: int,
+    shuffle_buffer: int,
+    max_texts: int,
+    oasst_english_only: bool,
+) -> Iterator[str]:
     rng = random.Random(seed)
 
-    def rows(name: str, s: int) -> Iterable[dict]:
-        ds = load_dataset(name, split="train", streaming=streaming)
+    def rows(name: str, split: str, s: int) -> Iterable[dict]:
+        ds = load_dataset(name, split=split, streaming=streaming)
         return ds.shuffle(seed=s, buffer_size=shuffle_buffer) if streaming else ds.shuffle(seed=s)
 
     seeds = [seed + i * 1231 for i in range(len(names))]
     its: List[Iterator[Tuple[str, str]]] = []
     for i, n in enumerate(names):
         lname = n.lower()
-        r = rows(n, seeds[i])
+        r = rows(n, splits[i], seeds[i])
         if "oasst1" in lname:
             it = iter_oasst(r, seeds[i], oasst_english_only)
         elif "tinystories" in lname:
@@ -665,7 +685,7 @@ def tok_corpus(names: Sequence[str], ratios: Sequence[float], streaming: bool, s
         except StopIteration:
             seeds[i] += 1
             lname = names[i].lower()
-            r = rows(names[i], seeds[i])
+            r = rows(names[i], splits[i], seeds[i])
             if "oasst1" in lname:
                 its[i] = iter_oasst(r, seeds[i], oasst_english_only)
             elif "tinystories" in lname:
@@ -711,7 +731,13 @@ def _auto_tokenizer_candidates(args: argparse.Namespace, out_dir: Path) -> List[
     return uniq
 
 
-def make_tokenizer(args: argparse.Namespace, names: Sequence[str], ratios: Sequence[float], out_dir: Path) -> ChatTokenizer:
+def make_tokenizer(
+    args: argparse.Namespace,
+    names: Sequence[str],
+    splits: Sequence[str],
+    ratios: Sequence[float],
+    out_dir: Path,
+) -> ChatTokenizer:
     td = out_dir / "tokenizer"
     explicit = _tokenizer_json_path(Path(args.tokenizer_path)) if args.tokenizer_path else None
     if explicit is not None:
@@ -734,7 +760,16 @@ def make_tokenizer(args: argparse.Namespace, names: Sequence[str], ratios: Seque
             )
 
     print("Training tokenizer...")
-    it = tok_corpus(names, ratios, args.dataset_streaming, args.seed, args.shuffle_buffer, args.tokenizer_samples, args.oasst_english_only)
+    it = tok_corpus(
+        names,
+        splits,
+        ratios,
+        args.dataset_streaming,
+        args.seed,
+        args.shuffle_buffer,
+        args.tokenizer_samples,
+        args.oasst_english_only,
+    )
     tok = ChatTokenizer.train_new(it, args.vocab_size, args.tokenizer_min_freq)
     tok.save(td)
     print(f"Tokenizer saved to {td}")
@@ -749,12 +784,13 @@ def train(args: argparse.Namespace) -> None:
     names = parse_csv(args.hf_datasets)
     if not names:
         raise ValueError("--hf_datasets is empty")
+    splits = parse_dataset_splits(args.dataset_splits, len(names))
     ratios = parse_ratios(args.mix_ratios, len(names))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tok = make_tokenizer(args, names, ratios, out_dir)
+    tok = make_tokenizer(args, names, splits, ratios, out_dir)
     if tok.vocab_size != args.vocab_size:
         print(f"Adjusting vocab_size from {args.vocab_size} to tokenizer size {tok.vocab_size}")
         args.vocab_size = tok.vocab_size
@@ -780,8 +816,34 @@ def train(args: argparse.Namespace) -> None:
     train_target = max(1, int(args.max_samples * (1.0 - args.val_fraction)))
     val_target = max(1, args.max_samples - train_target)
 
-    train_ds = MixedChat(names, ratios, tok, args.seq_len, train_target, "train", args.dataset_streaming, args.seed, args.shuffle_buffer, args.val_fraction, args.oasst_english_only)
-    val_ds = MixedChat(names, ratios, tok, args.seq_len, val_target, "val", args.dataset_streaming, args.seed + 999, args.shuffle_buffer, args.val_fraction, args.oasst_english_only)
+    train_ds = MixedChat(
+        names,
+        splits,
+        ratios,
+        tok,
+        args.seq_len,
+        train_target,
+        "train",
+        args.dataset_streaming,
+        args.seed,
+        args.shuffle_buffer,
+        args.val_fraction,
+        args.oasst_english_only,
+    )
+    val_ds = MixedChat(
+        names,
+        splits,
+        ratios,
+        tok,
+        args.seq_len,
+        val_target,
+        "val",
+        args.dataset_streaming,
+        args.seed + 999,
+        args.shuffle_buffer,
+        args.val_fraction,
+        args.oasst_english_only,
+    )
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, num_workers=0)
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, num_workers=0)
 
@@ -906,6 +968,7 @@ def parser() -> argparse.ArgumentParser:
 
     p.add_argument("--dataset_streaming", action="store_true")
     p.add_argument("--hf_datasets", type=str, default="roneneldan/TinyStories,OpenAssistant/oasst1")
+    p.add_argument("--dataset_splits", type=str, default="", help="Comma-separated HF splits matching --hf_datasets")
     p.add_argument("--mix_ratios", type=str, default="")
     p.add_argument("--max_samples", type=int, default=120000)
     p.add_argument("--val_fraction", type=float, default=0.05)
