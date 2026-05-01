@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval_ratio", type=float, default=0.05)
     parser.add_argument("--max_prompt_chars", type=int, default=1200)
     parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--topk_logits", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.95)
@@ -187,10 +187,14 @@ def worker(
     subsets: List[List[Dict]],
     temp_files: List[str],
 ) -> None:
+    # Isolate this process to only see its assigned GPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     prompts_subset = subsets[rank]
     temp_output = temp_files[rank]
     set_seed(args.seed + rank)
-    device = torch.device(f"cuda:{rank}")
+    
+    # Since we isolated the GPU, this process sees its GPU as 'cuda:0'
+    device = torch.device("cuda:0")
 
     quant_cfg = None
     dtype = torch.bfloat16
@@ -212,9 +216,9 @@ def worker(
         args.teacher_model,
         quantization_config=quant_cfg,
         torch_dtype=dtype,
-        device_map={"": rank},
+        device_map={"": 0}, 
         trust_remote_code=False,
-        attn_implementation="eager",
+        attn_implementation="sdpa",
     )
     model.eval()
 
@@ -297,10 +301,15 @@ def worker(
             if rank == 0 and (written % 100 == 0):
                 print(f"[gpu 0 progress] processed {written} rows")
 
+            # Periodically clear CUDA cache to prevent fragmentation OOM
+            if (i // args.batch_size) % 10 == 0:
+                torch.cuda.empty_cache()
+
         if buffer:
             fout.writelines(buffer)
             buffer.clear()
-
+        
+    torch.cuda.empty_cache()
     print(f"[gpu {rank}] finished processing {written} samples")
 
 
