@@ -1,0 +1,17 @@
+{
+  "special_tokens": [
+    "<pad>",
+    "<unk>",
+    "<bos>",
+    "<eos>",
+    "<user>",
+    "<assistant>"
+  ],
+  "pad_id": 0,
+  "unk_id": 1,
+  "bos_id": 2,
+  "eos_id": 3,
+  "user_id": 4,
+  "assistant_id": 5,
+  "vocab_size": 8192
+}
