@@ -521,6 +521,23 @@ class CosineWarmup:
         return {"t": self.t}
 
 
+class ConstantWarmup:
+    def __init__(self, opt: torch.optim.Optimizer, warmup: int):
+        self.opt = opt
+        self.warmup = max(1, warmup)
+        self.base = [g["lr"] for g in opt.param_groups]
+        self.t = 0
+
+    def step(self) -> None:
+        self.t += 1
+        s = self.t / self.warmup if self.t <= self.warmup else 1.0
+        for b, g in zip(self.base, self.opt.param_groups):
+            g["lr"] = b * s
+
+    def state_dict(self) -> Dict[str, int]:
+        return {"t": self.t}
+
+
 def ce_loss(logits: torch.Tensor, y: torch.Tensor, pad_id: int) -> torch.Tensor:
     v = logits.size(-1)
     return F.cross_entropy(logits.view(-1, v), y.view(-1), ignore_index=pad_id)
@@ -797,7 +814,10 @@ def train(args: argparse.Namespace) -> None:
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     micro_steps = math.ceil(train_target / args.batch_size)
     opt_steps = math.ceil(micro_steps / args.grad_accum) * args.epochs
-    sched = CosineWarmup(opt, args.warmup_steps, opt_steps, args.min_lr_ratio)
+    if args.lr_schedule == "constant":
+        sched = ConstantWarmup(opt, args.warmup_steps)
+    else:
+        sched = CosineWarmup(opt, args.warmup_steps, opt_steps, args.min_lr_ratio)
     scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
 
     (out_dir / "train_config.json").write_text(
@@ -904,6 +924,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--warmup_steps", type=int, default=200)
+    p.add_argument("--lr_schedule", type=str, default="cosine", choices=["cosine", "constant"])
 
     p.add_argument("--d_model", type=int, default=640)
     p.add_argument("--n_heads", type=int, default=8)
