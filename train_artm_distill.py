@@ -508,19 +508,29 @@ def main() -> None:
         p.requires_grad_(False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.device_count() > 1:
+        print(f"[system] using {torch.cuda.device_count()} GPUs for training")
+        student = nn.DataParallel(student)
+        if not args.teacher_load_in_4bit:
+            teacher = nn.DataParallel(teacher)
+
     student.to(device)
     if not args.teacher_load_in_4bit:
         teacher.to(device)
 
-    total_params = parameter_count(student)
+    # Use .module when accessing attributes if wrapped in DataParallel
+    student_obj = getattr(student, "module", student)
+    teacher_obj = getattr(teacher, "module", teacher)
+
+    total_params = parameter_count(student_obj)
     print(f"[model] student parameters: {total_params:,} ({total_params / 1e9:.3f}B)")
 
-    student_layers = student.config.n_layer
-    teacher_layers = int(getattr(teacher.config, "num_hidden_layers", student_layers))
+    student_layers = student_obj.config.n_layer
+    teacher_layers = int(getattr(teacher_obj.config, "num_hidden_layers", student_layers))
     layer_map = choose_layer_map(student_layers, teacher_layers, args.distill_layers)
 
-    teacher_hidden = int(getattr(teacher.config, "hidden_size", args.student_hidden))
-    student_hidden = student.config.n_embd
+    teacher_hidden = int(getattr(teacher_obj.config, "hidden_size", args.student_hidden))
+    student_hidden = student_obj.config.n_embd
     projectors = nn.ModuleList([nn.Linear(student_hidden, teacher_hidden, bias=False) for _ in layer_map]).to(device)
 
     optim_params = list(student.parameters()) + list(projectors.parameters())
@@ -622,7 +632,7 @@ def main() -> None:
                 if update_step % args.save_steps == 0:
                     ckpt = out_dir / f"checkpoint-step-{update_step}"
                     ckpt.mkdir(parents=True, exist_ok=True)
-                    student.save_pretrained(ckpt)
+                    student_obj.save_pretrained(ckpt)
                     tokenizer.save_pretrained(ckpt)
                     torch.save(projectors.state_dict(), ckpt / "distill_projectors.pt")
                     print(f"[save] {ckpt}")
@@ -636,7 +646,7 @@ def main() -> None:
             break
 
     if args.prune_heads_ratio > 0.0:
-        pruned_heads = prune_gpt2_heads(student, args.prune_heads_ratio)
+        pruned_heads = prune_gpt2_heads(student_obj, args.prune_heads_ratio)
         print(f"[prune] pruned heads in {len(pruned_heads)} layers")
 
         if args.post_prune_epochs > 0:
@@ -676,7 +686,7 @@ def main() -> None:
 
     final_dir = out_dir / "final_student"
     final_dir.mkdir(parents=True, exist_ok=True)
-    student.save_pretrained(final_dir)
+    student_obj.save_pretrained(final_dir)
     tokenizer.save_pretrained(final_dir)
 
     metrics = {

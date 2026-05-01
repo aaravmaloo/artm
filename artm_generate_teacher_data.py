@@ -19,8 +19,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import torch
+import torch.multiprocessing as mp
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, set_seed
+import os
+import shutil
 
 
 @dataclass(frozen=True)
@@ -54,7 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total_prompts", type=int, default=80_000)
     parser.add_argument("--eval_ratio", type=float, default=0.05)
     parser.add_argument("--max_prompt_chars", type=int, default=1200)
-    parser.add_argument("--max_new_tokens", type=int, default=192)
+    parser.add_argument("--max_new_tokens", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--topk_logits", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.95)
@@ -162,24 +166,140 @@ def sample_prompts(
     return prompts
 
 
-def render_chat(tokenizer, prompt: str) -> torch.Tensor:
-    messages = [{"role": "user", "content": prompt}]
-    if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template is not None:
-        input_ids = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
+
+
+
+def main() -> None:
+    args = parse_args()
+    set_seed(args.seed)
+
+    output_path = Path(args.output_jsonl)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{output_path} exists. Pass --overwrite to replace it.")
+
+
+
+def worker(
+    rank: int,
+    world_size: int,
+    args: argparse.Namespace,
+    prompts_subset: List[Dict],
+    temp_output: str,
+) -> None:
+    set_seed(args.seed + rank)
+    device = torch.device(f"cuda:{rank}")
+
+    quant_cfg = None
+    dtype = torch.bfloat16
+    if args.load_in_4bit:
+        quant_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
         )
-        # Handle cases where apply_chat_template returns BatchEncoding or dict
-        if not torch.is_tensor(input_ids):
-            if hasattr(input_ids, "input_ids"):
-                input_ids = input_ids.input_ids
-            elif isinstance(input_ids, dict):
-                input_ids = input_ids["input_ids"]
-    else:
-        fallback = f"User: {prompt}\nAssistant:"
-        input_ids = tokenizer(fallback, return_tensors="pt").input_ids
-    return input_ids
+        dtype = None
+
+    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=False)
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        args.teacher_model,
+        quantization_config=quant_cfg,
+        torch_dtype=dtype,
+        device_map={"": rank},
+        trust_remote_code=False,
+        attn_implementation="eager",
+    )
+    model.eval()
+
+    with open(temp_output, "w", encoding="utf-8") as fout:
+        written = 0
+        buffer = []
+        for i in range(0, len(prompts_subset), args.batch_size):
+            batch_items = prompts_subset[i : i + args.batch_size]
+            
+            batch_texts = []
+            for item in batch_items:
+                messages = [{"role": "user", "content": item["prompt"]}]
+                text = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+                batch_texts.append(text)
+            
+            inputs = tokenizer(batch_texts, return_tensors="pt", padding=True).to(device)
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            input_len = input_ids.shape[1]
+
+            with torch.no_grad():
+                generated = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=args.max_new_tokens,
+                    do_sample=True,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+
+            for b_idx, item in enumerate(batch_items):
+                seq = generated.sequences[b_idx]
+                gen_ids = seq[input_len:].tolist()
+                
+                if tokenizer.eos_token_id in gen_ids:
+                    eos_idx = gen_ids.index(tokenizer.eos_token_id)
+                    gen_ids = gen_ids[:eos_idx]
+                
+                if not gen_ids:
+                    continue
+
+                response_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+                if not response_text:
+                    continue
+
+                teacher_topk_ids: List[List[int]] = []
+                teacher_topk_logits: List[List[float]] = []
+                gen_len = len(gen_ids)
+                
+                for step_idx in range(gen_len):
+                    if step_idx >= len(generated.scores):
+                        break
+                    step_score = generated.scores[step_idx][b_idx].float().cpu()
+                    k = min(args.topk_logits, step_score.shape[-1])
+                    vals, ids = torch.topk(step_score, k=k)
+                    teacher_topk_ids.append(ids.tolist())
+                    teacher_topk_logits.append(vals.tolist())
+
+                record = {
+                    "id": item["id"],
+                    "split": item["split"],
+                    "source": item["source"],
+                    "prompt": item["prompt"],
+                    "teacher_response": response_text,
+                    "teacher_token_ids": gen_ids,
+                    "teacher_topk_ids": teacher_topk_ids,
+                    "teacher_topk_logits": teacher_topk_logits,
+                }
+                buffer.append(json.dumps(record, ensure_ascii=False) + "\n")
+                written += 1
+
+                if len(buffer) >= 100:
+                    fout.writelines(buffer)
+                    buffer.clear()
+
+            if rank == 0 and (written % 100 == 0):
+                print(f"[gpu 0 progress] processed {written} rows")
+
+        if buffer:
+            fout.writelines(buffer)
+            buffer.clear()
+
+    print(f"[gpu {rank}] finished processing {written} samples")
 
 
 def main() -> None:
@@ -214,92 +334,45 @@ def main() -> None:
         print(f"[data] {src.name}: {len(prompts)} prompts")
 
     random.Random(args.seed).shuffle(all_prompts)
+    
+    # Assign IDs and splits BEFORE partitioning
+    eval_cutoff = int(len(all_prompts) * args.eval_ratio)
+    for idx, item in enumerate(all_prompts):
+        item["id"] = idx + 1
+        item["split"] = "eval" if idx < eval_cutoff else "train"
+
     print(f"[data] total prompts: {len(all_prompts)}")
 
-    quant_cfg = None
-    dtype = torch.bfloat16
-    if args.load_in_4bit:
-        quant_cfg = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        dtype = None
+    world_size = torch.cuda.device_count()
+    if world_size < 1:
+        raise RuntimeError("No CUDA GPUs found.")
+    
+    print(f"[system] using {world_size} GPUs")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=False)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.teacher_model,
-        quantization_config=quant_cfg,
-        torch_dtype=dtype,
-        device_map="auto",
-        trust_remote_code=False,
-        attn_implementation="eager",
+    # Partition data
+    subsets = [all_prompts[i::world_size] for i in range(world_size)]
+    temp_files = [f"{args.output_jsonl}.tmp{i}" for i in range(world_size)]
+
+    mp.spawn(
+        worker,
+        args=(world_size, args, subsets, temp_files),
+        nprocs=world_size,
+        join=True,
     )
-    model.eval()
 
-    eval_cutoff = int(len(all_prompts) * args.eval_ratio)
-
+    # Merge results
+    print("[system] merging temporary files...")
     with output_path.open("w", encoding="utf-8") as fout:
-        written = 0
-        for idx, item in enumerate(all_prompts, start=1):
-            prompt = item["prompt"]
-            source = item["source"]
+        total_written = 0
+        for tmp_file in temp_files:
+            if os.path.exists(tmp_file):
+                with open(tmp_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        fout.write(line)
+                        total_written += 1
+                os.remove(tmp_file)
 
-            input_ids = render_chat(tokenizer, prompt).to(model.device)
-            attention_mask = torch.ones_like(input_ids)
-            input_len = input_ids.shape[1]
-
-            with torch.no_grad():
-                generated = model.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    max_new_tokens=args.max_new_tokens,
-                    do_sample=True,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                    pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-
-            seq = generated.sequences[0]
-            gen_ids = seq[input_len:].tolist()
-            if not gen_ids:
-                continue
-
-            response_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
-            if not response_text:
-                continue
-
-            teacher_topk_ids: List[List[int]] = []
-            teacher_topk_logits: List[List[float]] = []
-            for step_score in generated.scores:
-                step_score = step_score[0].float().cpu()
-                k = min(args.topk_logits, step_score.shape[-1])
-                vals, ids = torch.topk(step_score, k=k)
-                teacher_topk_ids.append(ids.tolist())
-                teacher_topk_logits.append(vals.tolist())
-
-            split = "eval" if written < eval_cutoff else "train"
-            record = {
-                "id": idx,
-                "split": split,
-                "source": source,
-                "prompt": prompt,
-                "teacher_response": response_text,
-                "teacher_token_ids": gen_ids,
-                "teacher_topk_ids": teacher_topk_ids,
-                "teacher_topk_logits": teacher_topk_logits,
-            }
-            fout.write(json.dumps(record, ensure_ascii=False) + "\n")
-            written += 1
-
-            if written % 100 == 0:
-                print(f"[progress] wrote {written} rows")
-
-    print(f"[done] wrote {written} records to: {output_path}")
+    print(f"[done] wrote {total_written} records to: {output_path}")
 
 
 if __name__ == "__main__":
