@@ -9,6 +9,16 @@ import torch
 from train_chat import ChatGPT, ChatTokenizer, GPTConfig, generate
 
 
+def _merge_system_prompt(system_prompt: str, user_prompt: str) -> str:
+    system_prompt = system_prompt.strip()
+    user_prompt = user_prompt.strip()
+    if not system_prompt:
+        return user_prompt
+    # This model has <user>/<assistant> tags but no dedicated <system> token,
+    # so we fold system instructions into the user turn.
+    return f"System instruction: {system_prompt}\n\nUser: {user_prompt}"
+
+
 def _clean_state_dict_keys(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     # Handle checkpoints saved from torch.compile / DDP wrappers.
     keys = list(state.keys())
@@ -93,6 +103,7 @@ def run_interactive(
     tok: ChatTokenizer,
     device: torch.device,
     seq_len: int,
+    system_prompt: str,
     temperature: float,
     top_k: int,
     top_p: float,
@@ -105,10 +116,11 @@ def run_interactive(
             break
         if not user:
             continue
+        merged_prompt = _merge_system_prompt(system_prompt, user)
         out = generate(
             model=model,
             tok=tok,
-            prompt=user,
+            prompt=merged_prompt,
             device=device,
             seq_len=seq_len,
             temperature=temperature,
@@ -124,6 +136,7 @@ def main() -> None:
     p.add_argument("--ckpt", type=str, required=True, help="Path to chat_epoch_X.pt")
     p.add_argument("--tokenizer_path", type=str, default="", help="Path to tokenizer.json or a folder containing it")
     p.add_argument("--prompt", type=str, default="", help="Single prompt; if empty, starts interactive mode")
+    p.add_argument("--system_prompt", type=str, default="", help="Behavior instruction injected before the user prompt")
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--seq_len", type=int, default=0, help="Optional override; 0 means use checkpoint value")
     p.add_argument("--temperature", type=float, default=0.8)
@@ -150,10 +163,11 @@ def main() -> None:
     )
 
     if args.prompt.strip():
+        merged_prompt = _merge_system_prompt(args.system_prompt, args.prompt)
         out = generate(
             model=model,
             tok=tok,
-            prompt=args.prompt,
+            prompt=merged_prompt,
             device=device,
             seq_len=seq_len,
             temperature=args.temperature,
@@ -168,6 +182,7 @@ def main() -> None:
             tok=tok,
             device=device,
             seq_len=seq_len,
+            system_prompt=args.system_prompt,
             temperature=args.temperature,
             top_k=args.top_k,
             top_p=args.top_p,
