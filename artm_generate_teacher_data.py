@@ -227,13 +227,14 @@ def main() -> None:
         )
         dtype = None
 
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=False)
     model = AutoModelForCausalLM.from_pretrained(
         args.teacher_model,
         quantization_config=quant_cfg,
         torch_dtype=dtype,
         device_map="auto",
-        trust_remote_code=True,
+        trust_remote_code=False,
+        attn_implementation="eager",
     )
     model.eval()
 
