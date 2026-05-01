@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ARTM end-to-end pipeline for Kaggle T4:
+# 1) Install deps
+# 2) Generate synthetic teacher dataset
+# 3) Train student from scratch with distillation (+ optional QAT)
+# 4) Convert to GGUF and quantize to Q4_K_M
+# 5) Benchmark quality + speed
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements_kaggle.txt
+
+python artm_generate_teacher_data.py \
+  --teacher_model microsoft/Phi-3.5-mini-instruct \
+  --output_jsonl /kaggle/working/artm_teacher_data.jsonl \
+  --total_prompts 80000 \
+  --max_new_tokens 192 \
+  --topk_logits 64 \
+  --temperature 0.8 \
+  --top_p 0.95 \
+  --cache_dir /kaggle/working/hf_cache \
+  --load_in_4bit \
+  --overwrite
+
+python train_artm_distill.py \
+  --teacher_model microsoft/Phi-3.5-mini-instruct \
+  --data_jsonl /kaggle/working/artm_teacher_data.jsonl \
+  --output_dir /kaggle/working/artm_distilled \
+  --student_layers 36 \
+  --student_hidden 1536 \
+  --student_heads 24 \
+  --student_ffn 6144 \
+  --context_length 2048 \
+  --temperature 2.0 \
+  --loss_weight_ce 1.0 \
+  --loss_weight_kd 1.0 \
+  --loss_weight_hidden 0.25 \
+  --epochs 3.0 \
+  --learning_rate 5e-4 \
+  --per_device_batch_size 4 \
+  --gradient_accumulation_steps 16 \
+  --bf16 \
+  --gradient_checkpointing \
+  --teacher_load_in_4bit \
+  --enable_qat \
+  --qat_bits 4 \
+  --prune_heads_ratio 0.25 \
+  --post_prune_epochs 1.0
+
+python export_gguf.py \
+  --student_dir /kaggle/working/artm_distilled/final_student \
+  --gguf_out_dir /kaggle/working/gguf \
+  --llama_cpp_dir /kaggle/working/llama.cpp \
+  --quant_type Q4_K_M
+
+python benchmark_tokens.py \
+  --student_hf_dir /kaggle/working/artm_distilled/final_student \
+  --teacher_model microsoft/Phi-3.5-mini-instruct \
+  --teacher_load_in_4bit \
+  --eval_jsonl /kaggle/working/artm_teacher_data.jsonl \
+  --max_eval_samples 512 \
+  --gguf_model_path /kaggle/working/gguf/artm-q4_k_m.gguf \
+  --n_ctx 2048 \
+  --n_threads 4 \
+  --speed_runs 5 \
+  --speed_max_tokens 128 \
+  --report_json /kaggle/working/artm_benchmark.json
+
+echo "Pipeline complete."
+echo "Student HF: /kaggle/working/artm_distilled/final_student"
+echo "GGUF Q4_K_M: /kaggle/working/gguf/artm-q4_k_m.gguf"
+echo "Benchmark report: /kaggle/working/artm_benchmark.json"

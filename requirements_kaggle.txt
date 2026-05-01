@@ -1,0 +1,10 @@
+torch>=2.2.0
+transformers>=4.41.0
+datasets>=2.19.0
+bitsandbytes>=0.43.0
+accelerate>=0.30.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+safetensors>=0.4.3
+sacrebleu>=2.4.2
+llama-cpp-python>=0.2.90
