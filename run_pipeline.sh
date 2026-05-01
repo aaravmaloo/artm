@@ -15,7 +15,7 @@ python artm_generate_teacher_data.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --output_jsonl /kaggle/working/artm_teacher_data.jsonl \
   --total_prompts 80000 \
-  --max_new_tokens 192 \
+  --max_new_tokens 128 \
   --topk_logits 64 \
   --temperature 0.8 \
   --top_p 0.95 \
@@ -31,15 +31,15 @@ python train_artm_distill.py \
   --student_hidden 1536 \
   --student_heads 24 \
   --student_ffn 6144 \
-  --context_length 2048 \
+  --context_length 1024 \
   --temperature 2.0 \
   --loss_weight_ce 1.0 \
   --loss_weight_kd 1.0 \
   --loss_weight_hidden 0.25 \
   --epochs 3.0 \
   --learning_rate 5e-4 \
-  --per_device_batch_size 4 \
-  --gradient_accumulation_steps 16 \
+  --per_device_batch_size 8 \
+  --gradient_accumulation_steps 4 \
   --bf16 \
   --gradient_checkpointing \
   --teacher_load_in_4bit \

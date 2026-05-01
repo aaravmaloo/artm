@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence
 
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -550,6 +551,10 @@ def main() -> None:
     running_loss = 0.0
     student.train()
 
+    train_start_time = time.time()
+    total_tokens_processed = 0
+    step_start_time = time.time()
+
     stop_training = False
     for epoch in range(math.ceil(args.epochs)):
         for batch in train_loader:
@@ -616,6 +621,7 @@ def main() -> None:
 
             loss.backward()
             running_loss += float(loss.item())
+            total_tokens_processed += input_ids.numel()
 
             if (micro_step + 1) % args.gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(optim_params, max_norm=1.0)
@@ -626,8 +632,12 @@ def main() -> None:
 
                 if update_step % args.logging_steps == 0:
                     lr = scheduler.get_last_lr()[0]
-                    print(f"[train] step={update_step} loss={running_loss / args.logging_steps:.4f} lr={lr:.6e}")
+                    elapsed = time.time() - step_start_time
+                    tok_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+                    print(f"[train] step={update_step} loss={running_loss / args.logging_steps:.4f} lr={lr:.6e} tok/s={tok_per_sec:.1f}")
                     running_loss = 0.0
+                    total_tokens_processed = 0
+                    step_start_time = time.time()
 
                 if update_step % args.save_steps == 0:
                     ckpt = out_dir / f"checkpoint-step-{update_step}"
