@@ -537,10 +537,15 @@ def main() -> None:
         )
         teacher_dtype = None
 
+    device_s = torch.device("cuda:0" if torch.cuda.device_count() > 0 else "cpu")
+    device_t = torch.device("cuda:1" if torch.cuda.device_count() > 1 else device_s)
+    
+    print(f"[system] student on {device_s}, teacher on {device_t}")
+
     teacher = AutoModelForCausalLM.from_pretrained(
         args.teacher_model,
         trust_remote_code=True,
-        device_map="auto" if args.teacher_load_in_4bit else None,
+        device_map={"": device_t.index} if device_t.type == "cuda" else None,
         quantization_config=teacher_quant,
         torch_dtype=teacher_dtype,
     )
@@ -548,16 +553,7 @@ def main() -> None:
     for p in teacher.parameters():
         p.requires_grad_(False)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if torch.cuda.device_count() > 1:
-        print(f"[system] using {torch.cuda.device_count()} GPUs for training")
-        student = nn.DataParallel(student)
-        if not args.teacher_load_in_4bit:
-            teacher = nn.DataParallel(teacher)
-
-    student.to(device)
-    if not args.teacher_load_in_4bit:
-        teacher.to(device)
+    student.to(device_s)
 
     # Use .module when accessing attributes if wrapped in DataParallel
     student_obj = getattr(student, "module", student)
@@ -588,8 +584,8 @@ def main() -> None:
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     autocast_dtype = torch.bfloat16 if args.bf16 else None
-    autocast_enabled = bool(args.bf16 and device.type == "cuda")
-    autocast_device = "cuda" if device.type == "cuda" else "cpu"
+    autocast_enabled = bool(args.bf16 and device_s.type == "cuda")
+    autocast_device = "cuda" if device_s.type == "cuda" else "cpu"
 
     micro_step = 0
     update_step = 0
@@ -603,9 +599,9 @@ def main() -> None:
     stop_training = False
     for epoch in range(math.ceil(args.epochs)):
         for batch in train_loader:
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-            labels = batch["labels"].to(device, non_blocking=True)
+            input_ids = batch["input_ids"].to(device_s, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device_s, non_blocking=True)
+            labels = batch["labels"].to(device_s, non_blocking=True)
 
             with torch.autocast(device_type=autocast_device, dtype=autocast_dtype, enabled=autocast_enabled):
                 s_out = student(
@@ -617,13 +613,21 @@ def main() -> None:
                 )
 
                 with torch.no_grad():
-                    t_out = teacher(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
+                    # Move data to teacher's GPU
+                    t_input_ids = input_ids.to(device_t)
+                    t_attention_mask = attention_mask.to(device_t)
+                    
+                    t_out_raw = teacher(
+                        input_ids=t_input_ids,
+                        attention_mask=t_attention_mask,
                         output_hidden_states=True,
                         output_attentions=args.loss_weight_attn > 0.0,
                         use_cache=False,
                     )
+                    # Move teacher outputs back to student's GPU for loss calculation
+                    t_logits = t_out_raw.logits.to(device_s)
+                    t_hiddens = [h.to(device_s) for h in t_out_raw.hidden_states]
+                    t_attns = [a.to(device_s) for a in (t_out_raw.attentions or [])]
 
                 s_logits, s_labels, valid = shift_for_lm(s_out.logits.float(), labels)
                 t_logits, _, _ = shift_for_lm(t_out.logits.float(), labels)
@@ -637,19 +641,19 @@ def main() -> None:
                 temp = args.temperature
                 kd_loss = masked_mse(s_logits / temp, t_logits / temp, valid)
 
-                hid_loss = torch.zeros((), device=device)
+                hid_loss = torch.zeros((), device=device_s)
                 for i, (s_idx, t_idx) in enumerate(layer_map):
                     s_h = s_out.hidden_states[s_idx + 1]
-                    t_h = t_out.hidden_states[t_idx + 1].float()
+                    t_h = t_hiddens[t_idx + 1].float()
                     s_h_proj = projectors[i](s_h.float())
                     hid_loss = hid_loss + masked_mse(s_h_proj, t_h, attention_mask.bool())
                 hid_loss = hid_loss / len(layer_map)
 
-                attn_loss = torch.zeros((), device=device)
+                attn_loss = torch.zeros((), device=device_s)
                 if args.loss_weight_attn > 0.0:
-                    for s_idx, t_idx in layer_map:
+                    for i, (s_idx, t_idx) in enumerate(layer_map):
                         s_a = s_out.attentions[s_idx].float().mean(dim=1)
-                        t_a = t_out.attentions[t_idx].float().mean(dim=1)
+                        t_a = t_attns[t_idx].float().mean(dim=1)
                         w = min(args.attn_window, s_a.size(-1), t_a.size(-1))
                         s_local = s_a[:, -w:, -w:]
                         t_local = t_a[:, -w:, -w:]
