@@ -223,10 +223,21 @@ def worker(
     )
     model.eval()
 
-    with open(temp_output, "w", encoding="utf-8") as fout:
-        written = 0
+    # Resume Logic: Check for existing temp file to skip already processed data
+    processed_count = 0
+    if os.path.exists(temp_output):
+        try:
+            with open(temp_output, "r", encoding="utf-8") as f:
+                processed_count = sum(1 for _ in f)
+            print(f"[gpu {rank}] Resuming from row {processed_count}")
+        except Exception as e:
+            print(f"[gpu {rank}] Error checking for resume: {e}")
+            processed_count = 0
+
+    with open(temp_output, "a", encoding="utf-8") as fout:
+        written = processed_count
         buffer = []
-        for i in range(0, len(prompts_subset), args.batch_size):
+        for i in range(processed_count, len(prompts_subset), args.batch_size):
             batch_items = prompts_subset[i : i + args.batch_size]
             
             batch_texts = []
