@@ -380,6 +380,23 @@ def main() -> None:
     subsets = [all_prompts[i::world_size] for i in range(world_size)]
     temp_files = [f"{args.output_jsonl}.tmp{i}" for i in range(world_size)]
 
+    # Seed backups from Kaggle Input if they exist and we haven't already resumed
+    backup_dir = "/kaggle/input/datasets/aaravmaloo/backups"
+    for i in range(world_size):
+        # We look for backups named either after the current output_jsonl or the hardcoded jaqua name
+        possible_backups = [
+            os.path.join(backup_dir, os.path.basename(temp_files[i])),
+            os.path.join(backup_dir, f"jaqua_teacher_data.jsonl.tmp{i}")
+        ]
+        for backup_file in possible_backups:
+            if os.path.exists(backup_file) and not os.path.exists(temp_files[i]):
+                print(f"[system] Seeding {temp_files[i]} from backup: {backup_file}")
+                try:
+                    shutil.copy(backup_file, temp_files[i])
+                    break # Found a backup, move to next GPU
+                except Exception as e:
+                    print(f"[system] Failed to copy backup {backup_file}: {e}")
+
     mp.spawn(
         worker,
         args=(world_size, args, subsets, temp_files),
