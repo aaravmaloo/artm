@@ -50,14 +50,11 @@ python train_artm_distill.py \
   --loss_weight_hidden 0.25 \
   --epochs 3.0 \
   --learning_rate 5e-4 \
-  --per_device_batch_size 8 \
-  --gradient_accumulation_steps 4 \
+  --per_device_batch_size 1 \
+  --gradient_accumulation_steps 64 \
   --bf16 \
   --gradient_checkpointing \
   --teacher_load_in_4bit \
-  --enable_qat \
-  --qat_bits 4 \
-  --prune_heads_ratio 0.25 \
   --post_prune_epochs 1.0
 
 python export_gguf.py \
