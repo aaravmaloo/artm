@@ -27,6 +27,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
+try:
+    import bitsandbytes as bnb
+    HAS_BNB = True
+except ImportError:
+    HAS_BNB = False
 from torch.utils.data import DataLoader, Dataset
 from transformers.pytorch_utils import Conv1D
 from transformers import (
@@ -570,7 +575,12 @@ def main() -> None:
     projectors = nn.ModuleList([nn.Linear(student_hidden, teacher_hidden, bias=False) for _ in layer_map]).to(device)
 
     optim_params = list(student.parameters()) + list(projectors.parameters())
-    optimizer = AdamW(optim_params, lr=args.learning_rate, weight_decay=args.weight_decay)
+    if HAS_BNB:
+        print("[system] using bitsandbytes 8-bit AdamW optimizer")
+        optimizer = bnb.optim.AdamW8bit(optim_params, lr=args.learning_rate, weight_decay=args.weight_decay)
+    else:
+        print("[system] bitsandbytes not found, using standard AdamW")
+        optimizer = AdamW(optim_params, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
     total_steps = max(1, int(steps_per_epoch * args.epochs))
