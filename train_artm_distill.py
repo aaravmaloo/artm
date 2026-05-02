@@ -80,9 +80,14 @@ def _apply_chat_template(tokenizer, prompt: str, response: str | None = None, ge
             tokenize=True,
             add_generation_prompt=generation_prompt,
         )
-        if isinstance(ids, torch.Tensor):
-            return ids.tolist()
-        return list(ids)
+        if isinstance(ids, str):
+            # Fallback if tokenize=True returned a rendered string
+            ids = tokenizer.encode(ids, add_special_tokens=False)
+        elif isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        
+        # Ensure every element is an integer to prevent "too many dimensions 'str'" errors
+        return [int(x) for x in ids]
 
     if response is None:
         text = f"User: {prompt}\nAssistant:"

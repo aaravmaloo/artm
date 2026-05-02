@@ -8,24 +8,36 @@ set -euo pipefail
 # 4) Convert to GGUF and quantize to Q4_K_M
 # 5) Benchmark quality + speed
 
+# 1) Install deps
 python -m pip install --upgrade pip
 python -m pip install -r requirements_kaggle.txt
 
-python artm_generate_teacher_data.py \
-  --teacher_model microsoft/Phi-3.5-mini-instruct \
-  --output_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
-  --total_prompts 7000 \
-  --max_new_tokens 128 \
-  --topk_logits 64 \
-  --temperature 0.8 \
-  --top_p 0.95 \
-  --cache_dir /kaggle/working/hf_cache \
-  --load_in_4bit \
-  --overwrite
+# Path detection for resume/final dataset
+DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
+BACKUP_PATH="/kaggle/input/datasets/aaravmaloo/final-dataaset/jaqua_teacher_data.jsonl"
 
+if [ -f "$BACKUP_PATH" ]; then
+    echo "[system] Found final dataset at $BACKUP_PATH. Skipping generation."
+    DATA_PATH="$BACKUP_PATH"
+else
+    echo "[system] Generating synthetic teacher dataset..."
+    python artm_generate_teacher_data.py \
+      --teacher_model microsoft/Phi-3.5-mini-instruct \
+      --output_jsonl "$DATA_PATH" \
+      --total_prompts 7000 \
+      --max_new_tokens 128 \
+      --topk_logits 64 \
+      --temperature 0.8 \
+      --top_p 0.95 \
+      --cache_dir /kaggle/working/hf_cache \
+      --load_in_4bit \
+      --overwrite
+fi
+
+echo "[system] Starting distillation training..."
 python train_artm_distill.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
-  --data_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
+  --data_jsonl "$DATA_PATH" \
   --output_dir /kaggle/working/jaqua_distilled \
   --student_layers 36 \
   --student_hidden 1536 \
