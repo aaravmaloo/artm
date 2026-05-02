@@ -80,6 +80,10 @@ def _apply_chat_template(tokenizer, prompt: str, response: str | None = None, ge
             tokenize=True,
             add_generation_prompt=generation_prompt,
         )
+        if isinstance(ids, dict):
+            # Some tokenizers return a dict with input_ids and attention_mask
+            ids = ids.get("input_ids", ids.get("input", ids))
+
         if isinstance(ids, str):
             # Fallback if tokenize=True returned a rendered string
             ids = tokenizer.encode(ids, add_special_tokens=False)
