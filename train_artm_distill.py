@@ -640,7 +640,7 @@ def main() -> None:
                         print(f"[gpu-sync] step {micro_step}: Teacher({device_t}) -> Student({device_s}) OK")
 
                 s_logits, s_labels, valid = shift_for_lm(s_out.logits.float(), labels)
-                t_logits, _, _ = shift_for_lm(t_out.logits.float(), labels)
+                t_logits, _, _ = shift_for_lm(t_logits.float(), labels)
 
                 ce_loss = F.cross_entropy(
                     s_logits.view(-1, s_logits.size(-1)),
