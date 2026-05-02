@@ -480,6 +480,11 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
 
+    print("\n" + "="*50)
+    print("      ARTM DISTILLATION PIPELINE - V2.0")
+    print("      (Separate GPU Model Parallelism)")
+    print("="*50 + "\n")
+
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -540,7 +545,9 @@ def main() -> None:
     device_s = torch.device("cuda:0" if torch.cuda.device_count() > 0 else "cpu")
     device_t = torch.device("cuda:1" if torch.cuda.device_count() > 1 else device_s)
     
-    print(f"[system] student on {device_s}, teacher on {device_t}")
+    print(f"[device] Student Model  -> {device_s}")
+    print(f"[device] Teacher Model  -> {device_t}")
+    print(f"[device] Logic: Model Parallelism (No DataParallel)")
 
     teacher = AutoModelForCausalLM.from_pretrained(
         args.teacher_model,
@@ -568,7 +575,7 @@ def main() -> None:
 
     teacher_hidden = int(getattr(teacher_obj.config, "hidden_size", args.student_hidden))
     student_hidden = student_obj.config.n_embd
-    projectors = nn.ModuleList([nn.Linear(student_hidden, teacher_hidden, bias=False) for _ in layer_map]).to(device)
+    projectors = nn.ModuleList([nn.Linear(student_hidden, teacher_hidden, bias=False) for _ in layer_map]).to(device_s)
 
     optim_params = list(student.parameters()) + list(projectors.parameters())
     if HAS_BNB:
@@ -628,6 +635,9 @@ def main() -> None:
                     t_logits = t_out_raw.logits.to(device_s)
                     t_hiddens = [h.to(device_s) for h in t_out_raw.hidden_states]
                     t_attns = [a.to(device_s) for a in (t_out_raw.attentions or [])]
+                    
+                    if micro_step % 50 == 0:
+                        print(f"[gpu-sync] step {micro_step}: Teacher({device_t}) -> Student({device_s}) OK")
 
                 s_logits, s_labels, valid = shift_for_lm(s_out.logits.float(), labels)
                 t_logits, _, _ = shift_for_lm(t_out.logits.float(), labels)
@@ -738,7 +748,7 @@ def main() -> None:
         student=student,
         teacher=teacher,
         dataloader=eval_loader,
-        device=device,
+        device=device_s,
         max_batches=max(1, args.max_eval_samples // max(1, args.per_device_batch_size)),
         use_bf16=args.bf16,
     )
