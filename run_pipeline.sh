@@ -14,7 +14,7 @@ python -m pip install -r requirements_kaggle.txt
 python artm_generate_teacher_data.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --output_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
-  --total_prompts 12000 \
+  --total_prompts 7000 \
   --max_new_tokens 128 \
   --topk_logits 64 \
   --temperature 0.8 \
