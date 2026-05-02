@@ -191,6 +191,8 @@ def worker(
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     prompts_subset = subsets[rank]
     temp_output = temp_files[rank]
+    # Sort prompts by length to minimize padding in batches (Sorted Batching)
+    prompts_subset.sort(key=lambda x: len(x["prompt"]))
     set_seed(args.seed + rank)
     
     # Since we isolated the GPU, this process sees its GPU as 'cuda:0'
@@ -253,6 +255,18 @@ def worker(
                     eos_token_id=tokenizer.eos_token_id,
                 )
 
+            # Vectorized Top-K extraction on GPU (much faster)
+            all_scores = torch.stack(generated.scores) # (gen_len, batch, vocab)
+            all_scores = all_scores.permute(1, 0, 2) # (batch, gen_len, vocab)
+            
+            # Get top-k for the whole batch at once
+            k = min(args.topk_logits, all_scores.shape[-1])
+            topk_vals, topk_ids = torch.topk(all_scores, k=k, dim=-1)
+            
+            # Move to CPU once per batch (convert to float16 to save bandwidth)
+            topk_vals_cpu = topk_vals.half().cpu()
+            topk_ids_cpu = topk_ids.cpu()
+
             for b_idx, item in enumerate(batch_items):
                 seq = generated.sequences[b_idx]
                 gen_ids = seq[input_len:].tolist()
@@ -268,18 +282,10 @@ def worker(
                 if not response_text:
                     continue
 
-                teacher_topk_ids: List[List[int]] = []
-                teacher_topk_logits: List[List[float]] = []
                 gen_len = len(gen_ids)
-                
-                for step_idx in range(gen_len):
-                    if step_idx >= len(generated.scores):
-                        break
-                    step_score = generated.scores[step_idx][b_idx].float().cpu()
-                    k = min(args.topk_logits, step_score.shape[-1])
-                    vals, ids = torch.topk(step_score, k=k)
-                    teacher_topk_ids.append(ids.tolist())
-                    teacher_topk_logits.append(vals.tolist())
+                # Slice the pre-calculated top-k for this specific sequence
+                teacher_topk_ids = topk_ids_cpu[b_idx, :gen_len].tolist()
+                teacher_topk_logits = topk_vals_cpu[b_idx, :gen_len].tolist()
 
                 record = {
                     "id": item["id"],
