@@ -35,9 +35,8 @@ class SourceSpec:
 
 
 SOURCES: List[SourceSpec] = [
-    SourceSpec("ultrachat", "HuggingFaceH4/ultrachat_200k", "train_sft", 0.60),
-    SourceSpec("openhermes", "teknium/OpenHermes-2.5", "train", 0.25),
-    SourceSpec("lmsys", "lmsys/lmsys-chat-1m", "train", 0.15),
+    SourceSpec("ultrachat", "HuggingFaceH4/ultrachat_200k", "train_sft", 0.20),
+    SourceSpec("openhermes", "teknium/OpenHermes-2.5", "train", 0.80),
 ]
 
 ROLE_MAP = {

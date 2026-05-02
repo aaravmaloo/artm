@@ -13,8 +13,8 @@ python -m pip install -r requirements_kaggle.txt
 
 python artm_generate_teacher_data.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
-  --output_jsonl /kaggle/working/artm_teacher_data.jsonl \
-  --total_prompts 80000 \
+  --output_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
+  --total_prompts 12000 \
   --max_new_tokens 128 \
   --topk_logits 64 \
   --temperature 0.8 \
@@ -25,8 +25,8 @@ python artm_generate_teacher_data.py \
 
 python train_artm_distill.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
-  --data_jsonl /kaggle/working/artm_teacher_data.jsonl \
-  --output_dir /kaggle/working/artm_distilled \
+  --data_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
+  --output_dir /kaggle/working/jaqua_distilled \
   --student_layers 36 \
   --student_hidden 1536 \
   --student_heads 24 \
@@ -49,25 +49,25 @@ python train_artm_distill.py \
   --post_prune_epochs 1.0
 
 python export_gguf.py \
-  --student_dir /kaggle/working/artm_distilled/final_student \
+  --student_dir /kaggle/working/jaqua_distilled/final_student \
   --gguf_out_dir /kaggle/working/gguf \
   --llama_cpp_dir /kaggle/working/llama.cpp \
   --quant_type Q4_K_M
 
 python benchmark_tokens.py \
-  --student_hf_dir /kaggle/working/artm_distilled/final_student \
+  --student_hf_dir /kaggle/working/jaqua_distilled/final_student \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --teacher_load_in_4bit \
-  --eval_jsonl /kaggle/working/artm_teacher_data.jsonl \
+  --eval_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
   --max_eval_samples 512 \
-  --gguf_model_path /kaggle/working/gguf/artm-q4_k_m.gguf \
+  --gguf_model_path /kaggle/working/gguf/jaqua-q4_k_m.gguf \
   --n_ctx 2048 \
   --n_threads 4 \
   --speed_runs 5 \
   --speed_max_tokens 128 \
-  --report_json /kaggle/working/artm_benchmark.json
+  --report_json /kaggle/working/jaqua_benchmark.json
 
 echo "Pipeline complete."
-echo "Student HF: /kaggle/working/artm_distilled/final_student"
-echo "GGUF Q4_K_M: /kaggle/working/gguf/artm-q4_k_m.gguf"
-echo "Benchmark report: /kaggle/working/artm_benchmark.json"
+echo "Student HF: /kaggle/working/jaqua_distilled/final_student"
+echo "GGUF Q4_K_M: /kaggle/working/gguf/jaqua-q4_k_m.gguf"
+echo "Benchmark report: /kaggle/working/jaqua_benchmark.json"
