@@ -80,18 +80,38 @@ def _apply_chat_template(tokenizer, prompt: str, response: str | None = None, ge
             tokenize=True,
             add_generation_prompt=generation_prompt,
         )
-        if isinstance(ids, dict):
-            # Some tokenizers return a dict with input_ids and attention_mask
+        # Ironclad extraction logic to handle various tokenizer return types
+        if hasattr(ids, "input_ids"):
+            ids = ids.input_ids
+        elif isinstance(ids, dict) or hasattr(ids, "get"):
             ids = ids.get("input_ids", ids.get("input", ids))
 
-        if isinstance(ids, str):
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        elif isinstance(ids, str):
             # Fallback if tokenize=True returned a rendered string
             ids = tokenizer.encode(ids, add_special_tokens=False)
-        elif isinstance(ids, torch.Tensor):
-            ids = ids.tolist()
+
+        # Final safety check: ensure we are iterating over a list/tuple
+        if not isinstance(ids, (list, tuple)):
+            if hasattr(ids, "__iter__"):
+                ids = list(ids)
+            else:
+                ids = [ids]
         
-        # Ensure every element is an integer to prevent "too many dimensions 'str'" errors
-        return [int(x) for x in ids]
+        # Convert to flat list of ints, skipping any non-numeric metadata
+        clean_ids = []
+        for x in ids:
+            try:
+                # If x is a list itself (batch), flatten it (though shouldn't happen here)
+                if isinstance(x, (list, tuple)):
+                    for sub_x in x:
+                        clean_ids.append(int(sub_x))
+                else:
+                    clean_ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return clean_ids
 
     if response is None:
         text = f"User: {prompt}\nAssistant:"
