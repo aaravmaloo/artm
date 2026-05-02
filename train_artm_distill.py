@@ -295,9 +295,9 @@ def parameter_count(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
-def build_student(tokenizer, args: argparse.Namespace) -> GPT2LMHeadModel:
+def build_student(tokenizer, args: argparse.Namespace, vocab_size: int = None) -> GPT2LMHeadModel:
     config = GPT2Config(
-        vocab_size=len(tokenizer),
+        vocab_size=vocab_size if vocab_size is not None else len(tokenizer),
         n_positions=args.context_length,
         n_ctx=args.context_length,
         n_embd=args.student_hidden,
@@ -509,7 +509,13 @@ def main() -> None:
         pin_memory=True,
     )
 
-    student = build_student(tokenizer, args)
+    from transformers import AutoConfig
+    t_cfg = AutoConfig.from_pretrained(args.teacher_model, trust_remote_code=True)
+    teacher_vocab_size = getattr(t_cfg, "vocab_size", len(tokenizer))
+    if teacher_vocab_size != len(tokenizer):
+        print(f"[system] Teacher vocab ({teacher_vocab_size}) != Tokenizer len ({len(tokenizer)}). Using {teacher_vocab_size} for student.")
+
+    student = build_student(tokenizer, args, vocab_size=teacher_vocab_size)
     if args.gradient_checkpointing:
         student.gradient_checkpointing_enable()
     if args.enable_qat:
