@@ -116,14 +116,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.teacher_model)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
-    # Build Student
-    config = GPT2Config(
-        vocab_size=len(tokenizer), n_positions=args.context_length, n_ctx=args.context_length,
-        n_embd=args.student_hidden, n_layer=args.student_layers, n_head=args.student_heads,
-        n_inner=args.student_ffn, activation_function="gelu_new", use_cache=False
-    )
-    student = GPT2LMHeadModel(config).to(device)
-    
+    # Load Teacher (BF16 is native to TPU)
     teacher = AutoModelForCausalLM.from_pretrained(
         args.teacher_model, 
         torch_dtype=torch.bfloat16, 
@@ -132,6 +125,20 @@ def main():
         use_cache=False
     ).to(device)
     teacher.eval()
+
+    # Build Student (Force vocab to match teacher EXACTLY)
+    config = GPT2Config(
+        vocab_size=teacher.config.vocab_size, 
+        n_positions=args.context_length, 
+        n_ctx=args.context_length,
+        n_embd=args.student_hidden, 
+        n_layer=args.student_layers, 
+        n_head=args.student_heads,
+        n_inner=args.student_ffn, 
+        activation_function="gelu_new", 
+        use_cache=False
+    )
+    student = GPT2LMHeadModel(config).to(device)
 
     train_ds = JsonlDistillDataset(args.data_jsonl, split="train")
     train_loader = DataLoader(
