@@ -625,8 +625,6 @@ def main() -> None:
     autocast_enabled = bool(args.bf16 and device_s.type == "cuda")
     autocast_device = "cuda" if device_s.type == "cuda" else "cpu"
 
-    micro_step = 0
-    update_step = 0
     running_loss = 0.0
     student.train()
 
@@ -634,9 +632,15 @@ def main() -> None:
     total_tokens_processed = 0
     step_start_time = time.time()
 
+    current_micro_step = 0
     stop_training = False
     for epoch in range(math.ceil(args.epochs)):
         for batch in train_loader:
+            # Skip batches already processed in previous session
+            if current_micro_step < micro_step:
+                current_micro_step += 1
+                continue
+            
             input_ids = batch["input_ids"].to(device_s, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device_s, non_blocking=True)
             labels = batch["labels"].to(device_s, non_blocking=True)
