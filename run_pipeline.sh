@@ -39,7 +39,7 @@ python train_artm_distill.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --data_jsonl "$DATA_PATH" \
   --output_dir /kaggle/working/jaqua_distilled \
-  --resume_from_checkpoint /kaggle/working/jaqua_distilled/checkpoint-step-50 \
+  --resume_from_checkpoint /kaggle/input/notebooks/aaravmaloo6/jaqua/jaqua_distilled/checkpoint-step-50 \
   --student_layers 36 \
   --student_hidden 1536 \
   --student_heads 24 \
