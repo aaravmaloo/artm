@@ -538,10 +538,22 @@ def main() -> None:
 
     student = build_student(tokenizer, args, vocab_size=teacher_vocab_size)
     
+    update_step = 0
+    micro_step = 0
     if args.resume_from_checkpoint:
         print(f"[system] Resuming student from {args.resume_from_checkpoint}")
         student = GPT2LMHeadModel.from_pretrained(args.resume_from_checkpoint)
         student.gradient_checkpointing_enable()
+        
+        # Try to parse step number from folder name (e.g., checkpoint-step-50)
+        try:
+            folder_name = os.path.basename(args.resume_from_checkpoint)
+            if "step-" in folder_name:
+                update_step = int(folder_name.split("step-")[-1])
+                micro_step = update_step * args.gradient_accumulation_steps
+                print(f"[system] Resuming from Update Step {update_step} (Micro Step {micro_step})")
+        except Exception as e:
+            print(f"[warning] Could not parse step from folder name: {e}")
     if args.enable_qat:
         apply_qat_wrappers(student, bits=args.qat_bits)
 
