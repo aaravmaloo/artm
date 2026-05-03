@@ -36,7 +36,7 @@ python train_artm_distill_tpu.py \
   --output_dir "$DRIVE_OUT" \
   --epochs 3.5 \
   --learning_rate 5e-4 \
-  --per_device_batch_size 4 \
+  --per_device_batch_size 2 \
   --student_layers 36 \
   --student_hidden 1536 \
   --student_heads 24 \
