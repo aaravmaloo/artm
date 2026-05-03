@@ -31,11 +31,15 @@ else
     exit 1
 fi
 
-echo "[system] Starting distillation training..."
+# Prevent memory fragmentation
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+
+echo "[system] Resuming distillation from checkpoint-step-50..."
 python train_artm_distill.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --data_jsonl "$DATA_PATH" \
   --output_dir /kaggle/working/jaqua_distilled \
+  --resume_from_checkpoint /kaggle/working/jaqua_distilled/checkpoint-step-50 \
   --student_layers 36 \
   --student_hidden 1536 \
   --student_heads 24 \
