@@ -50,8 +50,9 @@ python train_artm_distill.py \
   --loss_weight_hidden 0.25 \
   --epochs 3.0 \
   --learning_rate 5e-4 \
-  --per_device_batch_size 1 \
-  --gradient_accumulation_steps 64 \
+  --per_device_batch_size 2 \
+  --gradient_accumulation_steps 32 \
+  --save_steps 50 \
   --bf16 \
   --gradient_checkpointing \
   --teacher_load_in_4bit \

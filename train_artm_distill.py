@@ -218,7 +218,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--save_steps", type=int, default=500)
+    parser.add_argument("--save_steps", type=int, default=100)
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--bf16", action="store_true")
@@ -366,27 +367,37 @@ def eval_perplexity(
     autocast_device = "cuda" if device.type == "cuda" else "cpu"
 
     with torch.no_grad():
+        device_s = next(student.parameters()).device
+        device_t = next(teacher.parameters()).device
+
         for step, batch in enumerate(dataloader):
             if step >= max_batches:
                 break
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
+            input_ids = batch["input_ids"].to(device_s)
+            attention_mask = batch["attention_mask"].to(device_s)
+            labels = batch["labels"].to(device_s)
 
-            with torch.autocast(device_type=autocast_device, dtype=autocast_dtype, enabled=autocast_enabled):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if use_bf16 else torch.float16):
                 s_out = student(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     use_cache=False,
                 )
-                t_out = teacher(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
+                
+                # Move to teacher device
+                t_input_ids = input_ids.to(device_t)
+                t_attention_mask = attention_mask.to(device_t)
+                t_out_raw = teacher(
+                    input_ids=t_input_ids,
+                    attention_mask=t_attention_mask,
                     use_cache=False,
                 )
+                
+                # Move back to student device for loss calc
+                t_logits_to_s = t_out_raw.logits.to(device_s)
 
                 s_logits, s_labels, s_valid = shift_for_lm(s_out.logits.float(), labels)
-                t_logits, t_labels, _ = shift_for_lm(t_out.logits.float(), labels)
+                t_logits, t_labels, _ = shift_for_lm(t_logits_to_s.float(), labels)
 
                 s_loss = F.cross_entropy(
                     s_logits.view(-1, s_logits.size(-1)),
@@ -526,7 +537,10 @@ def main() -> None:
         print(f"[system] Teacher vocab ({teacher_vocab_size}) != Tokenizer len ({len(tokenizer)}). Using {teacher_vocab_size} for student.")
 
     student = build_student(tokenizer, args, vocab_size=teacher_vocab_size)
-    if args.gradient_checkpointing:
+    
+    if args.resume_from_checkpoint:
+        print(f"[system] Resuming student from {args.resume_from_checkpoint}")
+        student.load_state_dict(torch.load(Path(args.resume_from_checkpoint) / "pytorch_model.bin", map_location="cpu"))
         student.gradient_checkpointing_enable()
     if args.enable_qat:
         apply_qat_wrappers(student, bits=args.qat_bits)
@@ -713,6 +727,13 @@ def main() -> None:
             micro_step += 1
         if stop_training:
             break
+    
+    # SAFE SAVE: Save before evaluation just in case
+    print("[system] Training complete. Performing safe save...")
+    safe_dir = out_dir / "safe_checkpoint"
+    safe_dir.mkdir(parents=True, exist_ok=True)
+    student_obj.save_pretrained(safe_dir)
+    tokenizer.save_pretrained(safe_dir)
 
     if args.prune_heads_ratio > 0.0:
         pruned_heads = prune_gpt2_heads(student_obj, args.prune_heads_ratio)
