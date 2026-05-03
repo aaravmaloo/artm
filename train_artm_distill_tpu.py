@@ -49,8 +49,29 @@ class JsonlDistillDataset(Dataset):
 
 def _apply_chat_template(tokenizer, prompt: str, response: str | None = None, generation_prompt: bool = False) -> List[int]:
     messages = [{"role": "user", "content": prompt}]
-    if response: messages.append({"role": "assistant", "content": response})
-    return tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=generation_prompt)
+    if response is not None:
+        messages.append({"role": "assistant", "content": response})
+    
+    ids = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=generation_prompt,
+    )
+    
+    # Extract IDs if returned as a complex object or dictionary
+    if hasattr(ids, "input_ids"):
+        ids = ids.input_ids
+    elif isinstance(ids, dict):
+        ids = ids.get("input_ids", ids.get("input", ids))
+    
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    
+    # Ensure it's a flat list of integers
+    if not isinstance(ids, list):
+        ids = list(ids)
+    
+    return [int(x) for x in ids]
 
 class DistillCollator:
     def __init__(self, tokenizer, max_seq_len: int) -> None:
