@@ -172,11 +172,13 @@ def main():
 
             loss_ce = F.cross_entropy(s_logits.view(-1, s_logits.size(-1)), s_labels.view(-1), ignore_index=-100)
             
-            loss_kd = F.kl_div(
-                F.log_softmax(s_logits / args.temperature, dim=-1),
-                F.softmax(t_logits / args.temperature, dim=-1),
-                reduction="batchmean"
-            ) * (args.temperature ** 2)
+            # Manual KL-Divergence for TPU Stability
+            s_log_probs = F.log_softmax(s_logits / args.temperature, dim=-1)
+            t_probs = F.softmax(t_logits / args.temperature, dim=-1)
+            
+            # KL(Teacher || Student) = sum(T * (logT - logS))
+            loss_kd = (t_probs * (torch.log(t_probs + 1e-9) - s_log_probs)).sum(dim=-1).mean()
+            loss_kd = loss_kd * (args.temperature ** 2)
 
             loss = loss_ce + loss_kd
             loss.backward()
