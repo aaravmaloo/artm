@@ -1,44 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARTM Interactive TPU Pipeline
+# ARTM Interactive TPU Pipeline - V3.9 (Auto-Pilot Mode)
 export PJRT_DEVICE=TPU
 
 echo "=========================================================="
-echo "      ARTM INTERACTIVE TPU PIPELINE - V3.8"
+echo "      ARTM INTERACTIVE TPU PIPELINE - V3.9"
 echo "=========================================================="
 
-# 1) Install dependencies (Force matching versions)
-echo "[system] Synchronizing Torch & XLA versions (2.8.0)..."
-python -m pip install --upgrade pip
+# 1) Sync versions (Match 2.8.0)
 python -m pip install torch==2.8.0 torch_xla[tpu]==2.8.0 -f https://storage.googleapis.com/libtpu-releases/index.html
 python -m pip install --upgrade transformers accelerate
 
-# --- TPU v5e HARDWARE FLAGS ---
-export PJRT_DEVICE=TPU
-export TPU_PROCESS_INDEX=0
-export TPU_LOCAL_PROCESS_COUNT=1
-export TPU_NUM_DEVICES=8
-export CLOUD_TPU_TASK_ID=0
-export TPU_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export TPU_CHIPS_PER_HOST_BOUNDS=2,2,1
-# ------------------------------
-
 # 2) Dataset Setup
-BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/final-dataset/jaqua_teacher_data.jsonl"
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
+ln -sf "/kaggle/input/datasets/aaravmaloo6/final-dataset/jaqua_teacher_data.jsonl" "$DATA_PATH"
 
-if [ -f "$BACKUP_PATH" ]; then
-    echo "[system] Linking dataset: $BACKUP_PATH -> $DATA_PATH"
-    ln -sf "$BACKUP_PATH" "$DATA_PATH"
-else
-    echo "[error] Dataset not found! Please check your Kaggle Input path."
-    exit 1
-fi
+# 3) TPU Training (Using the official run_trainer wrapper)
+# This wrapper automatically fixes the "Expected X worker addresses" error.
+echo "[system] Launching via torch_xla.distributed.run_trainer..."
 
-# 3) TPU Training
-# We use per_device_batch_size 2 for safety
-python train_artm_distill_tpu.py \
+python -m torch_xla.distributed.run_trainer \
+  --num_engines 8 \
+  -- \
+  train_artm_distill_tpu.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --data_jsonl "$DATA_PATH" \
   --output_dir /kaggle/working/jaqua_distilled_tpu \
