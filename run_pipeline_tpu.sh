@@ -14,6 +14,16 @@ python -m pip install --upgrade pip
 python -m pip install torch==2.8.0 torch_xla[tpu]==2.8.0 -f https://storage.googleapis.com/libtpu-releases/index.html
 python -m pip install --upgrade transformers accelerate
 
+# --- TPU v5e HARDWARE FLAGS ---
+export PJRT_DEVICE=TPU
+export TPU_PROCESS_INDEX=0
+export TPU_LOCAL_PROCESS_COUNT=1
+export TPU_NUM_DEVICES=8
+export CLOUD_TPU_TASK_ID=0
+export TPU_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export TPU_CHIPS_PER_HOST_BOUNDS=2,2,1
+# ------------------------------
+
 # 2) Dataset Setup
 BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/final-dataset/jaqua_teacher_data.jsonl"
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
