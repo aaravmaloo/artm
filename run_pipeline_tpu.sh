@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARTM end-to-end TPU pipeline for Kaggle TPU v5e-8
+# ARTM end-to-end TPU pipeline for Kaggle v5e-8
+# Force TPU to Single-Host Mode (Fixes "Expected 8, got 1" error)
+export PJRT_DEVICE=TPU
+export TPU_PROCESS_INDEX=0
+export TPU_LOCAL_PROCESS_COUNT=1
+export TPU_NUM_DEVICES=8
+export CLOUD_TPU_TASK_ID=0
+
 echo "=========================================================="
-echo "      ARTM TPU DISTILLATION PIPELINE - V3.5 (v5e-8)"
+echo "      ARTM TPU DISTILLATION PIPELINE - V3.6 (v5e-8)"
 echo "=========================================================="
 
 # 1) Install dependencies
@@ -18,10 +25,10 @@ BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/final-dataset/jaqua_teacher_data
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
 
 if [ -f "$BACKUP_PATH" ]; then
-    echo "[system] Using dataset from input: $BACKUP_PATH"
+    echo "[system] Found dataset at $BACKUP_PATH."
     ln -sf "$BACKUP_PATH" "$DATA_PATH"
 else
-    echo "[error] Dataset not found at $BACKUP_PATH. Check your input data."
+    echo "[error] Dataset not found at $BACKUP_PATH"
     exit 1
 fi
 
@@ -62,5 +69,4 @@ python benchmark_tokens.py \
 
 echo "=========================================================="
 echo "PIPELINE COMPLETE!"
-echo "Find all outputs in /kaggle/working/"
 echo "=========================================================="
