@@ -48,7 +48,7 @@ python train_artm_distill.py \
   --loss_weight_ce 1.0 \
   --loss_weight_kd 1.0 \
   --loss_weight_hidden 0.25 \
-  --epochs 5.0 \
+  --epochs 3.5 \
   --learning_rate 5e-4 \
   --per_device_batch_size 1 \
   --gradient_accumulation_steps 64 \
