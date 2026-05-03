@@ -12,26 +12,23 @@ set -euo pipefail
 python -m pip install --upgrade pip
 python -m pip install -r requirements_kaggle.txt
 
-# Path detection for resume/final dataset
+# Path detection for the pre-generated dataset
+BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/final-dataaset/jaqua_teacher_data.jsonl"
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
-BACKUP_PATH="/kaggle/input/datasets/aaravmaloo/final-dataaset/jaqua_teacher_data.jsonl"
 
 if [ -f "$BACKUP_PATH" ]; then
-    echo "[system] Found final dataset at $BACKUP_PATH. Skipping generation."
-    DATA_PATH="$BACKUP_PATH"
+    echo "[system] Found existing dataset at $BACKUP_PATH."
+    echo "[system] Linking to local workspace to save time..."
+    ln -sf "$BACKUP_PATH" "$DATA_PATH"
 else
-    echo "[system] Generating synthetic teacher dataset..."
-    python artm_generate_teacher_data.py \
-      --teacher_model microsoft/Phi-3.5-mini-instruct \
-      --output_jsonl "$DATA_PATH" \
-      --total_prompts 7000 \
-      --max_new_tokens 128 \
-      --topk_logits 64 \
-      --temperature 0.8 \
-      --top_p 0.95 \
-      --cache_dir /kaggle/working/hf_cache \
-      --load_in_4bit \
-      --overwrite
+    echo "=========================================================="
+    echo "CRITICAL ERROR: DATASET NOT FOUND AT:"
+    echo "$BACKUP_PATH"
+    echo "----------------------------------------------------------"
+    echo "Skipping generation to save your 12-hour quota."
+    echo "Please ensure the dataset is attached to this notebook."
+    echo "=========================================================="
+    exit 1
 fi
 
 echo "[system] Starting distillation training..."
