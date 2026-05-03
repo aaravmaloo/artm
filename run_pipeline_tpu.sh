@@ -9,9 +9,9 @@ echo "      ARTM INTERACTIVE TPU PIPELINE - V3.8"
 echo "=========================================================="
 
 # 1) Install dependencies (Force matching versions)
-echo "[system] Synchronizing Torch & XLA versions..."
+echo "[system] Synchronizing Torch & XLA versions (2.8.1)..."
 python -m pip install --upgrade pip
-python -m pip install torch==2.5.1 torch_xla[tpu]==2.5.1 -f https://storage.googleapis.com/libtpu-releases/index.html
+python -m pip install torch==2.8.1 torch_xla[tpu]==2.8.1 -f https://storage.googleapis.com/libtpu-releases/index.html
 python -m pip install --upgrade transformers accelerate
 
 # 2) Dataset Setup
