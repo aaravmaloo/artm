@@ -672,12 +672,13 @@ def main() -> None:
                 kd_loss = masked_mse(s_logits / temp, t_logits / temp, valid)
 
                 hid_loss = torch.zeros((), device=device_s)
-                for i, (s_idx, t_idx) in enumerate(layer_map):
-                    s_h = s_out.hidden_states[s_idx + 1]
-                    t_h = t_hiddens[t_idx + 1].float()
-                    s_h_proj = projectors[i](s_h.float())
-                    hid_loss = hid_loss + masked_mse(s_h_proj, t_h, attention_mask.bool())
-                hid_loss = hid_loss / len(layer_map)
+                if args.loss_weight_hidden > 0.0 and len(t_hiddens) > 0:
+                    for i, (s_idx, t_idx) in enumerate(layer_map):
+                        s_h = s_out.hidden_states[s_idx + 1]
+                        t_h = t_hiddens[t_idx + 1].float()
+                        s_h_proj = projectors[i](s_h.float())
+                        hid_loss = hid_loss + masked_mse(s_h_proj, t_h, attention_mask.bool())
+                    hid_loss = hid_loss / len(layer_map)
 
                 attn_loss = torch.zeros((), device=device_s)
                 if args.loss_weight_attn > 0.0:
