@@ -125,7 +125,10 @@ def main():
     student = GPT2LMHeadModel(config).to(device)
     
     teacher = AutoModelForCausalLM.from_pretrained(
-        args.teacher_model, torch_dtype=torch.bfloat16, trust_remote_code=True
+        args.teacher_model, 
+        torch_dtype=torch.bfloat16, 
+        trust_remote_code=True,
+        attn_implementation="eager"
     ).to(device)
     teacher.eval()
 
