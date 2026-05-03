@@ -2,15 +2,13 @@
 set -euo pipefail
 
 # ARTM end-to-end TPU pipeline for Kaggle v5e-8
-# Force TPU to Single-Host Mode (Fixes "Expected 8, got 1" error)
+# We UNSET the problematic variables and let Kaggle's environment handle it
+unset TPU_LOCAL_PROCESS_COUNT
+unset TPU_PROCESS_INDEX
 export PJRT_DEVICE=TPU
-export TPU_PROCESS_INDEX=0
-export TPU_LOCAL_PROCESS_COUNT=1
-export TPU_NUM_DEVICES=8
-export CLOUD_TPU_TASK_ID=0
 
 echo "=========================================================="
-echo "      ARTM TPU DISTILLATION PIPELINE - V3.6 (v5e-8)"
+echo "      ARTM TPU DISTILLATION PIPELINE - V3.7 (v5e-8)"
 echo "=========================================================="
 
 # 1) Install dependencies
@@ -54,18 +52,6 @@ python export_gguf.py \
   --gguf_out_dir /kaggle/working/gguf_tpu \
   --llama_cpp_dir /kaggle/working/llama.cpp \
   --quant_type Q4_K_M
-
-# 5) Benchmarking
-echo "[system] Running Benchmarks..."
-python benchmark_tokens.py \
-  --student_hf_dir /kaggle/working/jaqua_distilled_tpu \
-  --teacher_model microsoft/Phi-3.5-mini-instruct \
-  --teacher_load_in_4bit \
-  --eval_jsonl "$DATA_PATH" \
-  --max_eval_samples 512 \
-  --gguf_model_path /kaggle/working/gguf_tpu/jaqua-q4_k_m.gguf \
-  --n_ctx 2048 \
-  --report_json /kaggle/working/jaqua_tpu_benchmark.json
 
 echo "=========================================================="
 echo "PIPELINE COMPLETE!"
