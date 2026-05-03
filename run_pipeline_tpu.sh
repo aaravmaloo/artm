@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARTM end-to-end TPU pipeline
-# Optimized for Kaggle TPU v3-8
-
+# ARTM end-to-end TPU pipeline for v5e-1 (Single Core)
 echo "=========================================================="
-echo "      ARTM TPU DISTILLATION PIPELINE - V3.0"
+echo "      ARTM TPU DISTILLATION PIPELINE - V3.2 (v5e-1)"
 echo "=========================================================="
 
+# 1) Install dependencies
+echo "[system] Installing TPU dependencies..."
+python -m pip install --upgrade pip
+python -m pip install -r requirements_kaggle.txt
+python -m pip install torch-xla
 
 # 2) Dataset Setup
 DATA_PATH="/content/jaqua_teacher_data.jsonl"
@@ -20,15 +23,14 @@ else
 fi
 
 # 3) TPU Distillation Training
-echo "[system] Starting TPU Training (3.5 Epochs)..."
-# We start from scratch for TPU optimization
+echo "[system] Starting TPU Training (v5e-1 Single-Core)..."
 python train_artm_distill_tpu.py \
   --teacher_model microsoft/Phi-3.5-mini-instruct \
   --data_jsonl "$DATA_PATH" \
   --output_dir /content/jaqua_distilled_tpu \
   --epochs 3.5 \
   --learning_rate 5e-4 \
-  --per_device_batch_size 2 \
+  --per_device_batch_size 4 \
   --student_layers 36 \
   --student_hidden 1536 \
   --student_heads 24 \
@@ -57,7 +59,4 @@ python benchmark_tokens.py \
 
 echo "=========================================================="
 echo "PIPELINE COMPLETE!"
-echo "Model Location: /content/jaqua_distilled_tpu"
-echo "GGUF Location:  /content/gguf_tpu/jaqua-q4_k_m.gguf"
-echo "Benchmark:       /content/jaqua_tpu_benchmark.json"
 echo "=========================================================="

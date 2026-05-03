@@ -1,10 +1,4 @@
 import os
-import shutil
-# Force TPU to use local runtime
-os.environ['PJRT_DEVICE'] = 'TPU'
-os.environ['TPU_PROCESS_INDEX'] = '0'
-os.environ['TPU_LOCAL_PROCESS_COUNT'] = '1'
-
 import math
 import time
 import json
@@ -17,9 +11,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+# TPU Libraries
 import torch_xla.core.xla_model as xm
-import torch_xla.distributed.parallel_loader as pl
-import torch_xla.distributed.xla_multiprocessing as xmp
 
 from transformers import (
     AutoModelForCausalLM,
@@ -30,7 +23,6 @@ from transformers import (
     set_seed
 )
 
-# Reuse the same dataset and record structures
 from dataclasses import dataclass
 
 @dataclass
@@ -80,7 +72,23 @@ class DistillCollator:
 def shift_for_lm(logits, labels):
     return logits[:, :-1, :].contiguous(), labels[:, 1:].contiguous(), (labels[:, 1:] != -100)
 
-def train_loop(index, args):
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--teacher_model", type=str, default="microsoft/Phi-3.5-mini-instruct")
+    parser.add_argument("--data_jsonl", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default="./tpu_output")
+    parser.add_argument("--epochs", type=float, default=3.5)
+    parser.add_argument("--learning_rate", type=float, default=5e-4)
+    parser.add_argument("--per_device_batch_size", type=int, default=4)
+    parser.add_argument("--temperature", type=float, default=2.0)
+    parser.add_argument("--student_layers", type=int, default=36)
+    parser.add_argument("--student_hidden", type=int, default=1536)
+    parser.add_argument("--student_heads", type=int, default=24)
+    parser.add_argument("--student_ffn", type=int, default=6144)
+    parser.add_argument("--context_length", type=int, default=256)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+
     set_seed(args.seed)
     device = xm.xla_device()
     
@@ -95,49 +103,43 @@ def train_loop(index, args):
     )
     student = GPT2LMHeadModel(config).to(device)
     
-    # Load Teacher (BF16 is native to TPU)
     teacher = AutoModelForCausalLM.from_pretrained(
         args.teacher_model, torch_dtype=torch.bfloat16, trust_remote_code=True
     ).to(device)
     teacher.eval()
 
     train_ds = JsonlDistillDataset(args.data_jsonl, split="train")
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_ds, num_replicas=xm.xrt_world_size(), rank=xm.get_ordinal(), shuffle=True
-    )
     train_loader = DataLoader(
-        train_ds, batch_size=args.per_device_batch_size, sampler=train_sampler,
-        collate_fn=DistillCollator(tokenizer, args.context_length), num_workers=4
+        train_ds, batch_size=args.per_device_batch_size, shuffle=True,
+        collate_fn=DistillCollator(tokenizer, args.context_length), num_workers=2
     )
 
-    optimizer = torch.optim.AdamW(student.parameters(), lr=args.learning_rate * xm.xrt_world_size())
+    optimizer = torch.optim.AdamW(student.parameters(), lr=args.learning_rate)
     total_steps = len(train_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, int(total_steps * 0.03), int(total_steps))
 
-    xm.master_print(f"[system] Starting TPU Distillation on {xm.xrt_world_size()} cores")
+    print(f"[system] Starting Single-Core TPU Distillation (v5e-1)")
     
-    for epoch in range(int(args.epochs)):
-        para_loader = pl.ParallelLoader(train_loader, [device])
-        for step, batch in enumerate(para_loader.per_device_loader(device)):
+    for epoch in range(math.ceil(args.epochs)):
+        for step, batch in enumerate(train_loader):
             optimizer.zero_grad()
             
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+            mask_orig = batch["attention_mask"].to(device)
             
             # Forward Student
-            s_out = student(input_ids=input_ids, attention_mask=batch["attention_mask"])
+            s_out = student(input_ids=input_ids, attention_mask=mask_orig)
             
             # Forward Teacher
             with torch.no_grad():
-                t_out = teacher(input_ids=input_ids, attention_mask=batch["attention_mask"])
+                t_out = teacher(input_ids=input_ids, attention_mask=mask_orig)
             
             s_logits, s_labels, mask = shift_for_lm(s_out.logits, labels)
             t_logits, _, _ = shift_for_lm(t_out.logits, labels)
 
-            # Standard CE Loss
             loss_ce = F.cross_entropy(s_logits.view(-1, s_logits.size(-1)), s_labels.view(-1), ignore_index=-100)
             
-            # KD Loss (Soft targets)
             loss_kd = F.kl_div(
                 F.log_softmax(s_logits / args.temperature, dim=-1),
                 F.softmax(t_logits / args.temperature, dim=-1),
@@ -151,37 +153,16 @@ def train_loop(index, args):
             scheduler.step()
 
             if step % 20 == 0:
-                xm.master_print(f"[epoch {epoch}] step {step} loss: {loss.item():.4f}")
+                print(f"[epoch {epoch}] step {step} loss: {loss.item():.4f}")
 
             if step > 0 and step % 500 == 0:
-                xm.master_print(f"[save] Saving checkpoint at step {step}...")
-                if xm.is_master_ordinal():
-                    ckpt_path = Path(args.output_dir) / f"checkpoint-{step}"
-                    student.save_pretrained(ckpt_path)
-                    tokenizer.save_pretrained(ckpt_path)
+                print(f"[save] Saving checkpoint at step {step}...")
+                ckpt_path = Path(args.output_dir) / f"checkpoint-{step}"
+                student.save_pretrained(ckpt_path)
+                tokenizer.save_pretrained(ckpt_path)
 
-    if xm.is_master_ordinal():
-        student.save_pretrained(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
+    student.save_pretrained(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
 
 if __name__ == "__main__":
-    # Ensure any previous TPU sessions are cleared
-    if os.path.exists("/tmp/tpu_logs"):
-        shutil.rmtree("/tmp/tpu_logs", ignore_errors=True)
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--teacher_model", type=str, default="microsoft/Phi-3.5-mini-instruct")
-    parser.add_argument("--data_jsonl", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, default="./tpu_output")
-    parser.add_argument("--epochs", type=float, default=3.5)
-    parser.add_argument("--learning_rate", type=float, default=5e-4)
-    parser.add_argument("--per_device_batch_size", type=int, default=2)
-    parser.add_argument("--temperature", type=float, default=2.0)
-    parser.add_argument("--student_layers", type=int, default=36)
-    parser.add_argument("--student_hidden", type=int, default=1536)
-    parser.add_argument("--student_heads", type=int, default=24)
-    parser.add_argument("--student_ffn", type=int, default=6144)
-    parser.add_argument("--context_length", type=int, default=256)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    xmp.spawn(train_loop, args=(args,))
+    main()
