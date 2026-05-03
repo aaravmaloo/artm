@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements_kaggle.txt
 
 # Path detection for the pre-generated dataset
-BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/final-dataaset/jaqua_teacher_data.jsonl"
+BACKUP_PATH="/kaggle/input/datasets/aaravmaloo6/dataset-rows/jaqua_teacher_data.jsonl"
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
 
 if [ -f "$BACKUP_PATH" ]; then
