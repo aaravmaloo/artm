@@ -641,16 +641,22 @@ def main() -> None:
                     t_out_raw = teacher(
                         input_ids=t_input_ids,
                         attention_mask=t_attention_mask,
-                        output_hidden_states=True,
+                        output_hidden_states=args.loss_weight_hidden > 0.0,
                         output_attentions=args.loss_weight_attn > 0.0,
                         use_cache=False,
                     )
                     # Move teacher outputs back to student's GPU for loss calculation
                     t_logits = t_out_raw.logits.to(device_s)
-                    t_hiddens = [h.to(device_s) for h in t_out_raw.hidden_states]
-                    t_attns = [a.to(device_s) for a in (t_out_raw.attentions or [])]
                     
-                    if micro_step % 50 == 0:
+                    t_hiddens = []
+                    if args.loss_weight_hidden > 0.0:
+                        t_hiddens = [h.to(device_s) for h in t_out_raw.hidden_states]
+                    
+                    t_attns = []
+                    if args.loss_weight_attn > 0.0:
+                        t_attns = [a.to(device_s) for a in (t_out_raw.attentions or [])]
+                    
+                    if micro_step % 100 == 0:
                         print(f"[gpu-sync] step {micro_step}: Teacher({device_t}) -> Student({device_s}) OK")
 
                 s_logits, s_labels, valid = shift_for_lm(s_out.logits.float(), labels)
@@ -713,11 +719,17 @@ def main() -> None:
                     step_start_time = time.time()
 
                 if update_step % args.save_steps == 0:
+                    # Safety: Clear cache before saving
+                    torch.cuda.empty_cache()
+                    
                     ckpt = out_dir / f"checkpoint-step-{update_step}"
                     ckpt.mkdir(parents=True, exist_ok=True)
                     student_obj.save_pretrained(ckpt)
                     tokenizer.save_pretrained(ckpt)
                     torch.save(projectors.state_dict(), ckpt / "distill_projectors.pt")
+                    
+                    # Clear cache again
+                    torch.cuda.empty_cache()
                     print(f"[save] {ckpt}")
 
                 if update_step >= total_steps:

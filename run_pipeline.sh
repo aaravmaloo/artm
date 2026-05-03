@@ -40,7 +40,7 @@ python train_artm_distill.py \
   --student_hidden 1536 \
   --student_heads 24 \
   --student_ffn 6144 \
-  --context_length 384 \
+  --context_length 256 \
   --temperature 2.0 \
   --loss_weight_ce 1.0 \
   --loss_weight_kd 1.0 \
