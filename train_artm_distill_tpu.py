@@ -128,7 +128,8 @@ def main():
         args.teacher_model, 
         torch_dtype=torch.bfloat16, 
         trust_remote_code=True,
-        attn_implementation="eager"
+        attn_implementation="eager",
+        use_cache=False
     ).to(device)
     teacher.eval()
 

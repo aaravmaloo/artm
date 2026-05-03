@@ -14,6 +14,7 @@ mkdir -p "$DRIVE_OUT"
 # 1) Install dependencies
 echo "[system] Installing TPU dependencies..."
 python -m pip install --upgrade pip
+python -m pip install --upgrade transformers accelerate
 python -m pip install -r requirements_kaggle.txt
 python -m pip install torch-xla
 
