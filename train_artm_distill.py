@@ -547,11 +547,15 @@ def main() -> None:
         
         # Try to parse step number from folder name (e.g., checkpoint-step-50)
         try:
-            folder_name = os.path.basename(args.resume_from_checkpoint)
+            # rstrip clears any trailing slashes so basename works
+            folder_name = os.path.basename(args.resume_from_checkpoint.rstrip("/"))
+            print(f"[debug] Parsing checkpoint folder: {folder_name}")
             if "step-" in folder_name:
                 update_step = int(folder_name.split("step-")[-1])
                 micro_step = update_step * args.gradient_accumulation_steps
                 print(f"[system] Resuming from Update Step {update_step} (Micro Step {micro_step})")
+            else:
+                print(f"[warning] Folder name '{folder_name}' does not contain 'step-'. Starting from 0.")
         except Exception as e:
             print(f"[warning] Could not parse step from folder name: {e}")
     if args.enable_qat:
