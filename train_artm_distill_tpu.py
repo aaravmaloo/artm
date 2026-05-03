@@ -16,6 +16,11 @@ from torch.utils.data import Dataset, DataLoader
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
+import torch_xla.runtime as xr
+
+# Force PJRT mode for modern TPUs
+if xr.device_type() != 'TPU':
+    os.environ['PJRT_DEVICE'] = 'TPU'
 
 from transformers import (
     AutoModelForCausalLM,
