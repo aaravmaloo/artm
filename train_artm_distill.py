@@ -540,7 +540,7 @@ def main() -> None:
     
     if args.resume_from_checkpoint:
         print(f"[system] Resuming student from {args.resume_from_checkpoint}")
-        student.load_state_dict(torch.load(Path(args.resume_from_checkpoint) / "pytorch_model.bin", map_location="cpu"))
+        student = GPT2LMHeadModel.from_pretrained(args.resume_from_checkpoint)
         student.gradient_checkpointing_enable()
     if args.enable_qat:
         apply_qat_wrappers(student, bits=args.qat_bits)
