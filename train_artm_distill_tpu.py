@@ -175,4 +175,4 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    xmp.spawn(train_loop, args=(args,), nprocs=8, start_method='fork')
+    xmp.spawn(train_loop, args=(args,))

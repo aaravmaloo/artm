@@ -8,12 +8,6 @@ echo "=========================================================="
 echo "      ARTM TPU DISTILLATION PIPELINE - V3.0"
 echo "=========================================================="
 
-# 1) Install dependencies
-echo "[system] Installing TPU dependencies..."
-python -m pip install --upgrade pip
-python -m pip install -r requirements_kaggle.txt
-# Ensure TPU-specific libraries are present
-python -m pip install torch-xla
 
 # 2) Dataset Setup
 DATA_PATH="/content/jaqua_teacher_data.jsonl"
