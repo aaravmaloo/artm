@@ -1,4 +1,10 @@
 import os
+import shutil
+# Force TPU to use local runtime
+os.environ['PJRT_DEVICE'] = 'TPU'
+os.environ['TPU_PROCESS_INDEX'] = '0'
+os.environ['TPU_LOCAL_PROCESS_COUNT'] = '1'
+
 import math
 import time
 import json
@@ -159,6 +165,9 @@ def train_loop(index, args):
         tokenizer.save_pretrained(args.output_dir)
 
 if __name__ == "__main__":
+    # Ensure any previous TPU sessions are cleared
+    if os.path.exists("/tmp/tpu_logs"):
+        shutil.rmtree("/tmp/tpu_logs", ignore_errors=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--teacher_model", type=str, default="microsoft/Phi-3.5-mini-instruct")
     parser.add_argument("--data_jsonl", type=str, required=True)
