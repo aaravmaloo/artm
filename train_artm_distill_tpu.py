@@ -1,4 +1,14 @@
 import os
+import sys
+
+# --- NUCLEAR RESET ---
+# Wipe all TPU/XLA variables before importing torch_xla
+for key in list(os.environ.keys()):
+    if key.startswith(('TPU_', 'XRT_', 'PJRT_')):
+        del os.environ[key]
+os.environ['PJRT_DEVICE'] = 'TPU'
+# ---------------------
+
 import math
 import time
 import json
