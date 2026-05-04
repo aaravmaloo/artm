@@ -118,7 +118,7 @@ def train_loop(index, args):
     
     train_ds = JsonlDistillDataset(args.data_jsonl)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_ds, num_replicas=xm.xrt_world_size(), rank=xm.get_ordinal(), shuffle=True
+        train_ds, num_replicas=xm.xla_world_size(), rank=xm.get_ordinal(), shuffle=True
     )
     train_loader = DataLoader(
         train_ds, batch_size=args.per_device_batch_size, sampler=train_sampler,
