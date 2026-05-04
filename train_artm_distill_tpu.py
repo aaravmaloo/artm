@@ -129,7 +129,7 @@ def train_loop(index, args):
     total_steps = len(train_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, int(total_steps * 0.03), int(total_steps))
 
-    if xm.is_master_proc():
+    if xr.global_ordinal() == 0:
         print(f"[system] Starting 8-Core Kaggle TPU Distillation")
 
     for epoch in range(math.ceil(args.epochs)):
@@ -157,15 +157,15 @@ def train_loop(index, args):
             xm.optimizer_step(optimizer)
             scheduler.step()
 
-            if step % 20 == 0 and xm.is_master_proc():
+            if step % 20 == 0 and xr.global_ordinal() == 0:
                 print(f"[epoch {epoch}] step {step} loss: {loss.item():.4f}")
 
-            if step > 0 and step % 1000 == 0 and xm.is_master_proc():
+            if step > 0 and step % 1000 == 0 and xr.global_ordinal() == 0:
                 ckpt_path = Path(args.output_dir) / f"checkpoint-{step}"
                 student.save_pretrained(ckpt_path)
                 tokenizer.save_pretrained(ckpt_path)
 
-    if xm.is_master_proc():
+    if xr.global_ordinal() == 0:
         student.save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
 
