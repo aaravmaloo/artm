@@ -132,7 +132,7 @@ def train_loop(index, args):
         n_inner=args.student_ffn, activation_function="gelu_new", use_cache=False
     )
     student = GPT2LMHeadModel(config).to(torch.bfloat16).to(device)
-    
+    student.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True, "preserve_rng_state": False})
     
     train_ds = JsonlDistillDataset(args.data_jsonl)
     train_sampler = torch.utils.data.distributed.DistributedSampler(

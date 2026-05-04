@@ -6,10 +6,6 @@ echo "=========================================================="
 echo "      ARTM INTERACTIVE TPU PIPELINE - V4.3"
 echo "=========================================================="
 
-# 1) Sync versions
-python -m pip install torch==2.8.0 torch_xla[tpu]==2.8.0 -f https://storage.googleapis.com/libtpu-releases/index.html
-python -m pip install --upgrade transformers accelerate
-
 # 2) Dataset Setup
 DATA_PATH="/kaggle/working/jaqua_teacher_data.jsonl"
 ln -sf "/kaggle/input/datasets/aaravmaloo6/final-dataset/jaqua_teacher_data.jsonl" "$DATA_PATH"
