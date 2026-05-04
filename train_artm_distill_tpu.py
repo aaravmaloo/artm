@@ -24,6 +24,8 @@ transformers.logging.set_verbosity_error()
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import math
+import time
+import json
 import argparse
 import gc
 from pathlib import Path
@@ -179,11 +181,13 @@ def train_loop(index, args):
 
             if step > 0 and step % 1000 == 0 and xr.global_ordinal() == 0:
                 ckpt_path = Path(args.output_dir) / f"checkpoint-{step}"
-                student.save_pretrained(ckpt_path)
+                state_dict = {k: v.cpu() for k, v in student.state_dict().items()}
+                student.save_pretrained(ckpt_path, state_dict=state_dict)
                 tokenizer.save_pretrained(ckpt_path)
 
     if xr.global_ordinal() == 0:
-        student.save_pretrained(args.output_dir)
+        state_dict = {k: v.cpu() for k, v in student.state_dict().items()}
+        student.save_pretrained(args.output_dir, state_dict=state_dict)
         tokenizer.save_pretrained(args.output_dir)
 
 if __name__ == "__main__":
