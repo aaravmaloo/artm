@@ -13,11 +13,17 @@ os.environ['PJRT_DEVICE'] = 'TPU'
 for k in ['TPU_PROCESS_ADDRESSES', 'TPU_NAME', 'TPU_CONFIG']:
     if k in os.environ:
         del os.environ[k]
-# --------------------------
+# Suppress warnings
+import warnings
+import logging
+warnings.filterwarnings("ignore")
+logging.getLogger("transformers_modules").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+import transformers
+transformers.logging.set_verbosity_error()
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import math
-import time
-import json
 import argparse
 import gc
 from pathlib import Path
@@ -124,7 +130,7 @@ def train_loop(index, args):
         n_inner=args.student_ffn, activation_function="gelu_new", use_cache=False
     )
     student = GPT2LMHeadModel(config).to(torch.bfloat16).to(device)
-    student.gradient_checkpointing_enable()
+    
     
     train_ds = JsonlDistillDataset(args.data_jsonl)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
