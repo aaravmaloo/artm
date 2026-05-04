@@ -1,13 +1,13 @@
 import os
 import sys
 
-# --- NUCLEAR RESET ---
-# Wipe all TPU/XLA variables before importing torch_xla
-for key in list(os.environ.keys()):
-    if key.startswith(('TPU_', 'XRT_', 'PJRT_')):
-        del os.environ[key]
+# --- TPU INITIALIZATION ---
+# Ensure PJRT_DEVICE is set to TPU for modern torch_xla versions.
+# We do NOT wipe TPU_/XRT_ variables here as they are required for 
+# auto-discovery on Kaggle TPU VMs.
+import os
 os.environ['PJRT_DEVICE'] = 'TPU'
-# ---------------------
+# --------------------------
 
 import math
 import time
