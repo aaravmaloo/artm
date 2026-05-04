@@ -58,7 +58,8 @@ from transformers import (
     GPT2Config,
     GPT2LMHeadModel,
     get_cosine_schedule_with_warmup,
-    set_seed
+    set_seed,
+    Adafactor
 )
 
 from dataclasses import dataclass
@@ -152,7 +153,13 @@ def train_loop(index, args):
         collate_fn=DistillCollator(tokenizer, args.context_length), num_workers=0
     )
 
-    optimizer = torch.optim.AdamW(student.parameters(), lr=args.learning_rate)
+    optimizer = Adafactor(
+        student.parameters(),
+        lr=args.learning_rate,
+        scale_parameter=False,
+        relative_step=False,
+        warmup_init=False
+    )
     total_steps = len(train_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, int(total_steps * 0.03), int(total_steps))
 
