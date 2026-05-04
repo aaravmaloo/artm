@@ -26,3 +26,31 @@ python train_artm_distill_tpu.py \
   --student_heads 24 \
   --student_ffn 6144 \
   --context_length 256
+
+echo "=========================================================="
+echo "      TPU TRAINING COMPLETE - STARTING POST-PROCESSING"
+echo "=========================================================="
+
+python export_gguf.py \
+  --student_dir /kaggle/working/jaqua_distilled_tpu \
+  --gguf_out_dir /kaggle/working/gguf \
+  --llama_cpp_dir /kaggle/working/llama.cpp \
+  --quant_type Q4_K_M
+
+python benchmark_tokens.py \
+  --student_hf_dir /kaggle/working/jaqua_distilled_tpu \
+  --teacher_model microsoft/Phi-3.5-mini-instruct \
+  --teacher_load_in_4bit \
+  --eval_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
+  --max_eval_samples 512 \
+  --gguf_model_path /kaggle/working/gguf/jaqua-q4_k_m.gguf \
+  --n_ctx 2048 \
+  --n_threads 4 \
+  --speed_runs 5 \
+  --speed_max_tokens 128 \
+  --report_json /kaggle/working/jaqua_benchmark_tpu.json
+
+echo "Pipeline complete."
+echo "Student HF: /kaggle/working/jaqua_distilled_tpu"
+echo "GGUF Q4_K_M: /kaggle/working/gguf/jaqua-q4_k_m.gguf"
+echo "Benchmark report: /kaggle/working/jaqua_benchmark_tpu.json"
