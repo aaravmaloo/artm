@@ -2,11 +2,12 @@ import os
 import sys
 
 # --- TPU INITIALIZATION ---
-# Ensure PJRT_DEVICE is set to TPU for modern torch_xla versions.
-# We do NOT wipe TPU_/XRT_ variables here as they are required for 
-# auto-discovery on Kaggle TPU VMs.
-import os
+# Force PJRT mode and clean up environment variables that often cause 
+# "Expected 8 worker addresses, got 1" or port conflicts on Kaggle TPU VMs.
 os.environ['PJRT_DEVICE'] = 'TPU'
+for k in ['TPU_PROCESS_ADDRESSES', 'TPU_NAME', 'TPU_CONFIG']:
+    if k in os.environ:
+        del os.environ[k]
 # --------------------------
 
 import math
@@ -28,9 +29,6 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch_xla.runtime as xr
 
-# Force PJRT mode for modern TPUs
-if xr.device_type() != 'TPU':
-    os.environ['PJRT_DEVICE'] = 'TPU'
 
 from transformers import (
     AutoModelForCausalLM,
@@ -188,4 +186,4 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    xmp.spawn(train_loop, args=(args,))
+    xmp.spawn(train_loop, args=(args,), nprocs=8)
