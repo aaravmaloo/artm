@@ -1,5 +1,10 @@
 import os
 import sys
+import warnings
+
+warnings.filterwarnings("ignore")
+import transformers
+transformers.logging.set_verbosity_error()
 
 # --- TPU INITIALIZATION ---
 # Force PJRT mode and clean up environment variables that often cause 
@@ -84,11 +89,15 @@ class DistillCollator:
         batch_input_ids, batch_labels = [], []
         for sample in items:
             ids = _apply_chat_template(self.tokenizer, sample.prompt, sample.response)
-            if len(ids) > self.max_seq_len: ids = ids[:self.max_seq_len]
-            batch_input_ids.append(torch.tensor(ids))
-            batch_labels.append(torch.tensor(ids))
-        input_ids = torch.nn.utils.rnn.pad_sequence(batch_input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        labels = torch.nn.utils.rnn.pad_sequence(batch_labels, batch_first=True, padding_value=-100)
+            if len(ids) > self.max_seq_len:
+                ids = ids[:self.max_seq_len]
+                
+            pad_len = self.max_seq_len - len(ids)
+            batch_input_ids.append(ids + [self.tokenizer.pad_token_id] * pad_len)
+            batch_labels.append(ids + [-100] * pad_len)
+            
+        input_ids = torch.tensor(batch_input_ids)
+        labels = torch.tensor(batch_labels)
         return {"input_ids": input_ids, "attention_mask": (input_ids != self.tokenizer.pad_token_id).long(), "labels": labels}
 
 def shift_for_lm(logits, labels):
@@ -114,7 +123,8 @@ def train_loop(index, args):
         n_embd=args.student_hidden, n_layer=args.student_layers, n_head=args.student_heads,
         n_inner=args.student_ffn, activation_function="gelu_new", use_cache=False
     )
-    student = GPT2LMHeadModel(config).to(device)
+    student = GPT2LMHeadModel(config).to(torch.bfloat16).to(device)
+    student.gradient_checkpointing_enable()
     
     train_ds = JsonlDistillDataset(args.data_jsonl)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -158,7 +168,8 @@ def train_loop(index, args):
             scheduler.step()
 
             if step % 20 == 0 and xr.global_ordinal() == 0:
-                print(f"[epoch {epoch}] step {step} loss: {loss.item():.4f}")
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"[Epoch {epoch}] Step {step}/{len(train_loader)} | Loss: {loss.item():.4f} | LR: {current_lr:.2e}")
 
             if step > 0 and step % 1000 == 0 and xr.global_ordinal() == 0:
                 ckpt_path = Path(args.output_dir) / f"checkpoint-{step}"
