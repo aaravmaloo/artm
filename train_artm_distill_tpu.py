@@ -42,6 +42,15 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch_xla.runtime as xr
 
+# Fix PyTorch Gradient Checkpointing bug for XLA
+class XLADummyModule:
+    @staticmethod
+    def get_rng_state(device=None): return torch.empty(0, dtype=torch.uint8)
+    @staticmethod
+    def set_rng_state(new_state, device=None): pass
+try: torch._register_device_module('xla', XLADummyModule)
+except: pass
+
 
 from transformers import (
     AutoModelForCausalLM,
