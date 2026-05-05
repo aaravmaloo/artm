@@ -38,7 +38,7 @@ echo "=========================================================="
 
 python export_gguf.py \
   --student_dir /kaggle/working/jaqua_distilled_tpu \
-  --gguf_out_dir /kaggle/working/gguf \
+  --gguf_out_dir /kaggle/working \
   --llama_cpp_dir /kaggle/working/llama.cpp \
   --quant_type Q4_K_M
 
@@ -48,14 +48,19 @@ python benchmark_tokens.py \
   --teacher_load_in_4bit \
   --eval_jsonl /kaggle/working/jaqua_teacher_data.jsonl \
   --max_eval_samples 512 \
-  --gguf_model_path /kaggle/working/gguf/jaqua-q4_k_m.gguf \
+  --gguf_model_path /kaggle/working/jaqua-q4_k_m.gguf \
   --n_ctx 2048 \
   --n_threads 4 \
   --speed_runs 5 \
   --speed_max_tokens 128 \
   --report_json /kaggle/working/jaqua_benchmark_tpu.json
 
+echo "=========================================================="
+echo "      CLEANING UP KAGGLE OUTPUT SPACE"
+echo "=========================================================="
+rm -rf /kaggle/working/llama.cpp
+rm -rf /kaggle/working/jaqua_distilled_tpu
+
 echo "Pipeline complete."
-echo "Student HF: /kaggle/working/jaqua_distilled_tpu"
-echo "GGUF Q4_K_M: /kaggle/working/gguf/jaqua-q4_k_m.gguf"
+echo "Final GGUF Q4_K_M: /kaggle/working/jaqua-q4_k_m.gguf"
 echo "Benchmark report: /kaggle/working/jaqua_benchmark_tpu.json"
